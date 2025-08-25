@@ -49,6 +49,8 @@ class Job:
         self.logger.info("Checking TPU status...")
         ready = self.tpu.check_and_maybe_delete()
         if ready:
+            self.cfg.tpu.ips = self.tpu.get_ips()
+            OmegaConf.save(self.cfg, Path(self.dir) / "config.yaml")
             return True
          
         self.logger.info("Requesting TPU...")
@@ -58,7 +60,7 @@ class Job:
             return False
         
         self.cfg.tpu.ips = self.tpu.get_ips()
-        OmegaConf.save(cfg, Path(self.dir) / "config.yaml")
+        OmegaConf.save(self.cfg, Path(self.dir) / "config.yaml")
         return True
 
     def setup(self):
