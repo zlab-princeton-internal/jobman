@@ -27,7 +27,7 @@ class COMMAND:
 
         elif isinstance(worker_spec, int):
             if not (0 <= worker_spec < num_workers):
-                log(f"Invalid worker index: {worker_spec}. Only {num_workers} workers available.", "ERROR")
+                print(f"Invalid worker index: {worker_spec}. Only {num_workers} workers available.", "ERROR")
                 return []
             return [worker_spec]
 

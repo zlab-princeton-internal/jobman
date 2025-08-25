@@ -38,6 +38,11 @@ def infer_num_workers(accelerator: str) -> int:
     else:
         raise ValueError(f"Unknown TPU version in accelerator: {accelerator}")
 
+def _atomic_write_text(path: Path, text: str) -> None:
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(text)
+    os.replace(tmp, path)
+
 class JobMan:
 
     def __init__(self):
@@ -47,9 +52,16 @@ class JobMan:
         self.cntr_file = jobman_dir / "next_job_id.txt"
         self.logger = setup_logger(stdout=True)
         
+        if not self.lock_file.exists():
+            self.lock_file.touch()
+        if not self.meta_file.exists():
+            _atomic_write_text(self.meta_file, "{}\n")
+        if not self.cntr_file.exists():
+            _atomic_write_text(self.cntr_file, "0\n")
+        
     @contextmanager
     def with_meta_lock(self):
-        with open(self.lock_file, "w") as lock_fp:
+        with open(self.lock_file, "r+") as lock_fp:
             fcntl.flock(lock_fp, fcntl.LOCK_EX)
             try:
                 if self.meta_file.exists():
@@ -91,10 +103,8 @@ class JobMan:
         return job_id
     
     def get_next_job_id(self):
-        if not self.cntr_file.exists():
-            self.cntr_file.write_text("0")
 
-        with open(self.lock_file, "w") as lock_fp:
+        with open(self.lock_file, "r+") as lock_fp:
             fcntl.flock(lock_fp, fcntl.LOCK_EX)
             current = int(self.cntr_file.read_text())
             next_id = current + 1

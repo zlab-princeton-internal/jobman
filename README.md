@@ -7,6 +7,19 @@
 Jobman-v2 is a modular and extensible job management system for TPU VMs. 
 
 ## Installation
+
+In order to use Jobman, you need to make sure `gcloud` is available on your machine in the first place. You may refer to [the official doc](https://cloud.google.com/sdk/docs/install) to do so.  
+Afterwards, also install `alpha` and `beta`.
+```bash
+gcloud components install alpha beta
+```
+
+Login with your gcloud account.
+```bash
+gcloud auth login
+```
+
+And build the jobman package from source.
 ```bash
 python -m pip install --upgrade pip
 pip install -e .
