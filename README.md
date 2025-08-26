@@ -19,7 +19,13 @@ Login with your gcloud account.
 gcloud auth login
 ```
 
-And build the jobman package from source.
+Also make sure tmux has been installed
+```bash
+tmux -V
+```
+If not, follow [tmux wiki](https://github.com/tmux/tmux/wiki/Installing) to install tmux.
+
+Lastly, build the jobman package from source.
 ```bash
 python -m pip install --upgrade pip
 pip install -e .
