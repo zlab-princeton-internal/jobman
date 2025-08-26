@@ -1,5 +1,7 @@
 import subprocess
+from tqdm import tqdm
 from yaspin import yaspin
+from tabulate import tabulate
 
 # List of GCS buckets to profile
 def list_buckets():
@@ -35,18 +37,21 @@ def main():
     buckets = list_buckets()
     # buckets = [b for b in buckets if b.startswith("llm_pruning")]
     total_size = 0
-
-    print(f"{'Bucket Name':<30} {'Size':>15}")
-    print("-" * 60)
+    rows = []
 
     sizes = []
-    for bucket in buckets:
+
+    with tqdm(buckets) as pbar:
+        for bucket in pbar:
+            pbar.set_description(f"processing bucket: {bucket}")
             size = get_bucket_size(bucket)
             total_size += size
-            print(f"{bucket:<30} {format_size(size):>15}")
+            rows.append([bucket, format_size(size)])
 
-    print("-" * 60)
-    print(f"{'Total':<30} {format_size(total_size):>15}")
+    rows.append([None, None])
+    rows.append(["TOTAL", format_size(total_size)])
+
+    print(tabulate(rows, headers=["Bucket Name", "Size"], tablefmt="github"))    
 
 if __name__ == "__main__":
     main()

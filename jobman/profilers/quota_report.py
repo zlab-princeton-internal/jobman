@@ -4,8 +4,8 @@ from tabulate import tabulate
 from googleapiclient import discovery
 from google.auth import default
 
-# credentials, _ = default()
-# compute = discovery.build("compute", "v1", credentials=credentials)
+credentials, _ = default()
+compute = discovery.build("compute", "v1", credentials=credentials)
 
 PROJECT_ID = "vision-mix"
 

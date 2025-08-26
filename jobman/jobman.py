@@ -16,7 +16,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from jobman.job import Job
 from jobman.utils import setup_logger
 
-jobs_dir = Path("jobs") 
+BASE_DIR = Path(__file__).resolve().parent 
+jobs_dir = (BASE_DIR / ".." / "jobs").resolve()
 jobman_dir = jobs_dir / ".jobman"
 
 def infer_num_workers(accelerator: str) -> int:
@@ -77,7 +78,7 @@ class JobMan:
     def create_job(self, config_path):
         job_id = self.get_next_job_id()
         user = os.environ['USER']
-        job_dir = Path(f"jobs/{user}/{job_id}")
+        job_dir = jobs_dir / user / job_id
         job_dir.mkdir(parents=True, exist_ok=True)
         
         with self.with_meta_lock() as meta:
@@ -138,6 +139,7 @@ class JobMan:
         )
 
         self.logger.info(f"Job {job_id} started. See logs at {logs_dir}/job.log.")
+        self.logger.info(f"Config snapshot saved at {str(config_path)}. Modify the snapshot if you need to resume the job.")
     
     def check_tmux_session(self, session_name: str) -> bool:
         return subprocess.run(

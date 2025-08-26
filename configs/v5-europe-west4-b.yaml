@@ -1,25 +1,25 @@
 job:
-  name: test-v4
+  name: test-v5
   env_type: docker
-  loop: true
+  loop: False
 
 tpu:
   allocation_mode: "queued-resources"    # tpu-vm | queued-resources
-  accelerator: v4-8
+  accelerator: v5litepod-64
   name: yufeng-${tpu.accelerator}
-  zone: us-central2-b
-  version: tpu-ubuntu2204-base
-  pricing: spot
+  zone: europe-west4-b
+  version: v2-alpha-tpuv5-lite
+  pricing: spot                   
   # spot | ondemand | preemptible
   startup_script: null
   tags: ["jobman", "experiment"]
   metadata:
     owner: "yufeng"
     # owner can be used to map tpus to user I think
-    purpose: "pretrain"
+    purpose: "testing jobman"
 
 gcsfuse:
-  bucket_name: llm_pruning_us_central2_b
+  bucket_name: llm_pruning_europe_west4
   mount_path: /home/zephyr/gcs-bucket
 
 ssh:
@@ -63,26 +63,21 @@ venv:
 
 command:
   cmd: |
+    # pip show jax
+    # pip show flax
+
     rm -rf /home/zephyr/maxtext
-
     cp -r /home/zephyr/gcs-bucket/maxtext /home/zephyr/maxtext
-
     mkdir -p /home/zephyr/maxtext/logs
 
-
     gcloud config set project vision-mix
-
     gcloud config set compute/zone ${tpu.zone}
-
     export TPU_PREFIX=${tpu.name}
-
     export BUCKET_NAME=${gcsfuse.bucket_name}
-
     cd /home/zephyr/maxtext
+    bash scripts/llama3.1_4b_width_S50.sh
 
-    bash pretrain/llama3_8b_L200_1e-4.sh
-
-    # export HF_DATASETS_CACHE='/home/zephyr/gcs-bucket/datasets'
-    # cd /home/zephyr/gcs-bucket/lm-evaluation-harness
-    # bash scripts/test_orbax_eval.sh
+    # pip install torch
+    # cd /home/zephyr/gcs-bucket/maxtext
+    # bash tests/test_eq.sh    
   workers: [0] # int | list | "all"

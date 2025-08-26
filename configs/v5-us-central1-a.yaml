@@ -1,13 +1,13 @@
 job:
-  name: test-v6
+  name: test-v5
   env_type: docker
   loop: False
 
 tpu:
   allocation_mode: "queued-resources"    # tpu-vm | queued-resources
-  accelerator: v5litepod-64
+  accelerator: v5litepod-32
   name: yufeng-${tpu.accelerator}
-  zone: europe-west4-b
+  zone: us-central1-a
   version: v2-alpha-tpuv5-lite
   pricing: spot                   
   # spot | ondemand | preemptible
@@ -19,7 +19,7 @@ tpu:
     purpose: "testing jobman"
 
 gcsfuse:
-  bucket_name: llm_pruning_europe_west4
+  bucket_name: llm_pruning_us_central1
   mount_path: /home/zephyr/gcs-bucket
 
 ssh:

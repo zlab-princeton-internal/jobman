@@ -28,17 +28,17 @@ class Job:
         self.loop = cfg.job.get('loop', False)
        
         self.tpu = TPU(cfg)
-        self.ssh = SSH(cfg)
-        self.gcsfuse = GCSFUSE(cfg)
-        self.command = COMMAND(cfg)
+        self.ssh = SSH(cfg) if getattr(cfg, "ssh", None) is not None else None
+        self.gcsfuse = GCSFUSE(cfg) if getattr(cfg, "gcsfuse", None) is not None else None
+        self.command = COMMAND(cfg) if getattr(cfg, "command", None) is not None else None
         
         self.env_type = cfg.job.env_type
         if self.env_type == 'docker':
-            self.env = DOCKER(cfg)
+            self.env = DOCKER(cfg) if getattr(cfg, "docker", None) is not None else None
         elif self.env_type == 'conda':
-            self.env = CONDA(cfg)
+            self.env = CONDA(cfg) if getattr(cfg, "conda", None) is not None else None
         elif self.env_type == 'venv':
-            self.env = VENV(cfg)
+            self.env = VENV(cfg) if getattr(cfg, "venv", None) is not None else None
         else:
             raise ValueError(f"Invalid env type {env_type}")
         
@@ -64,11 +64,11 @@ class Job:
         return True
 
     def setup(self):
-        if not self.ssh.setup():
+        if self.ssh and not self.ssh.setup():
             return False
-        if not self.gcsfuse.setup():
+        if self.gcsfuse and not self.gcsfuse.setup():
             return False
-        if not self.env.setup():
+        if self.env and not self.env.setup():
             return False
         
         return True

@@ -17,6 +17,7 @@ gcloud components install alpha beta
 Login with your gcloud account.
 ```bash
 gcloud auth login
+gcloud auth application-default login
 ```
 
 Also make sure tmux has been installed

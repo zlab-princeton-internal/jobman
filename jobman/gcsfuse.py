@@ -75,7 +75,7 @@ class GCSFUSE:
             mountpoint -q {self.mount_path} || sudo gcsfuse --implicit-dirs --dir-mode=777 --file-mode=777 --o allow_other {self.bucket} {self.mount_path}
 
             echo '[INFO] Listing contents...'
-            ls -la {self.mount_path}
+            sudo ls -la {self.mount_path}
         """)
 
         ssh_cmd = [
