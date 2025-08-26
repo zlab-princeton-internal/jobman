@@ -40,12 +40,12 @@ This section differs from the Get Started section as it explains briefly how Job
 
 ## Other Resources
 
-### Simoler TPU request tool
-The design concept of Jobman is somewhat complex, but it aims to provide the easiest user interface s.t. user unfamiliar with TPU can quickly get started.  
-For a simpler setup tool, you may refer to `other_resources/ultra_create_tpu.sh` by Peter Tong.
+### Simpler TPU request tool
+The design concept of Jobman is somewhat complex, but it aims to provide the easiest user interface s.t. users unfamiliar with TPU can quickly get started.  
+For a simpler setup tool, you may refer to [`other_resources/ultra_create_tpu.sh`](other_resources/ultra_create_tpu.sh) by Peter Tong.
 
 ### Slack Chatbot
-Boyang Zheng has also developed a brilliant Slack Chatbot that 1) automatically deletes dead tpu vms 2) profiles daily usage and sends to their Slack Channel. You may refer to it at `other_resources/slack_chatbot`.
+Boyang Zheng has also developed a brilliant Slack Chatbot that 1) automatically deletes dead tpu vms 2) profiles daily usage and sends to their Slack Channel. You may refer to it at [`other_resources/slack_chatbot`](other_resources/slack_chatbot).
 
 ## Dashboard
 Coming soon
