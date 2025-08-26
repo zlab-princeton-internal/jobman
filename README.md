@@ -9,24 +9,24 @@ Jobman-v2 is a modular and extensible job management system for TPU VMs.
 ## Installation
 
 In order to use Jobman, you need to make sure `gcloud` is available on your machine in the first place. You may refer to [the official doc](https://cloud.google.com/sdk/docs/install) to do so.  
-Afterwards, also install `alpha` and `beta`.
+Afterwards, also install `alpha` and `beta`:
 ```bash
 gcloud components install alpha beta
 ```
 
-Login with your gcloud account.
+Login with your gcloud account:
 ```bash
 gcloud auth login
 gcloud auth application-default login
 ```
 
-Also make sure tmux has been installed
+Also make sure tmux has been installed:
 ```bash
 tmux -V
 ```
 If not, follow [tmux wiki](https://github.com/tmux/tmux/wiki/Installing) to install tmux.
 
-Lastly, build the jobman package from source.
+Lastly, build the jobman package from source:
 ```bash
 python -m pip install --upgrade pip
 pip install -e .
@@ -47,8 +47,11 @@ This section differs from the Get Started section as it explains briefly how Job
 
 ## Other Resources
 
-### Simpler TPU request tool
-The design concept of Jobman is somewhat complex, but it aims to provide the easiest user interface s.t. users unfamiliar with TPU can quickly get started.  
+### TPU Intro
+Boya Zeng has created [a comprehensive guide](https://github.com/boyazeng/tpu_intro) covering various problems and tips when using tpus. You can find the answers to most of the problems you may have regarding TPUs. This project also provides [a simple job management script](https://github.com/boyazeng/tpu_intro/tree/main/job_management).
+
+### Ultra Create TPU
+The design concept of Jobman is somewhat complex, but it aims to provide the easiest user interface s.t. users unfamiliar with TPUs can quickly get started.  
 For a simpler setup tool, you may refer to [`other_resources/ultra_create_tpu.sh`](other_resources/ultra_create_tpu.sh) by Peter Tong.
 
 ### Slack Chatbot
