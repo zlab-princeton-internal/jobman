@@ -29,7 +29,6 @@ ZONAL_QUOTA = {
 }
 
 REGIONS = sorted(set(zone.rsplit("-", 1)[0] for zone in ZONAL_QUOTA))
-IP_QUOTA_METRIC = "IN_USE_ADDRESSES"
 
 def get_tpu_usage_by_type(zone):
     """Return a dict of {(tpu_type, schedule): total_cores} used in a given zone."""
@@ -63,16 +62,16 @@ def get_tpu_usage_by_type(zone):
         print(f"[ERROR] Querying zone {zone}: {e.stderr.decode().strip()}")
     return usage
 
-def get_ip_usage():
+def get_quota_usage(metric: str):
     results = {}
     for region in REGIONS:
         try:
             res = compute.regions().get(project=PROJECT_ID, region=region).execute()
             for q in res.get("quotas", []):
-                if q["metric"] == IP_QUOTA_METRIC:
+                if q["metric"] == metric:
                     results[region] = {"used": int(q["usage"]), "limit": int(q["limit"])}
         except Exception as e:
-            print(f"[ERROR] Failed to get IP quota for {region}: {e}")
+            print(f"[ERROR] Failed to get quota {metric} for {region}: {e}")
     return results
 
 def main():
@@ -93,17 +92,33 @@ def main():
         headers=["TPU Type", "Schedule", "Used", "Quota", "Zone"],
         tablefmt="github"
     ))
-    print()
 
-    ip_usage = get_ip_usage()
-    ip_rows = [
-        [region, v["used"], v["limit"]]
-        for region, v in sorted(ip_usage.items())
-    ]
-
-    print("====== Regional IP Quota Usage ======\n")
+    print("\n====== Regional IP Quota Usage ======\n")
     print(tabulate(
-        ip_rows,
+        [
+            [region, v["used"], v["limit"]]
+            for region, v in sorted(get_quota_usage('IN_USE_ADDRESSES').items())
+        ],
+        headers=["Region", "Used", "Quota"],
+        tablefmt="github"
+    ))
+    
+    print("\n====== Regional VM Instances Usage ======\n")
+    print(tabulate(
+        [
+            [region, v["used"], v["limit"]]
+            for region, v in sorted(get_quota_usage('INSTANCES').items())
+        ],
+        headers=["Region", "Used", "Quota"],
+        tablefmt="github"
+    ))
+    
+    print("\n====== Regional Persistent Disk Usage ======\n")
+    print(tabulate(
+        [
+            [region, v["used"], v["limit"]]
+            for region, v in sorted(get_quota_usage('DISKS_TOTAL_GB').items())
+        ],
         headers=["Region", "Used", "Quota"],
         tablefmt="github"
     ))
