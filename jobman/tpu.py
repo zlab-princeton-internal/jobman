@@ -159,6 +159,9 @@ class TPU:
             elif status in {"FAILED", "DELETING", "UNSPECIFIED"}:
                 self.logger.error(f"TPU failed or disappeared: {status}")
                 return False
+            elif status in {"NOT FOUND"}:
+                if self._check_queued_resource_status() in {"FAILED", "SUSPENDED"}:
+                    return False
             time.sleep(poll_interval)
     
     def get_ips(self):

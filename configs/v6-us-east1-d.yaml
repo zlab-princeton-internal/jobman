@@ -4,8 +4,8 @@ job:
   loop: False
 
 tpu:
-  allocation_mode: "queued-resources"    # tpu-vm | queued-resources
-  accelerator: v6e-1
+  allocation_mode: "tpu-vm"    # tpu-vm | queued-resources
+  accelerator: v6e-32
   name: yufeng-${tpu.accelerator}
   zone: us-east1-d
   version: v2-alpha-tpuv6e
