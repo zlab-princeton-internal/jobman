@@ -160,7 +160,9 @@ class TPU:
                 self.logger.error(f"TPU failed or disappeared: {status}")
                 return False
             elif status in {"NOT FOUND"}:
-                if self._check_queued_resource_status() in {"FAILED", "SUSPENDED"}:
+                queue_status =  self._check_queued_resource_status() 
+                if queue_status in {"FAILED", "SUSPENDED"}:
+                    self.logger.error(f"Queued Resources failed: {queue_status}")
                     return False
             time.sleep(poll_interval)
     
