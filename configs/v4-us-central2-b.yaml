@@ -64,12 +64,7 @@ venv:
 command:
   cmd: |
     rm -rf /home/zephyr/maxtext
-
-    cp -r /home/zephyr/gcs-bucket/maxtext /home/zephyr/maxtext
-
-    mkdir -p /home/zephyr/maxtext/logs
-
-
+    
     gcloud config set project vision-mix
 
     gcloud config set compute/zone ${tpu.zone}
@@ -78,7 +73,11 @@ command:
 
     export BUCKET_NAME=${gcsfuse.bucket_name}
 
-    cd /home/zephyr/maxtext
+    cd /home/zephyr/
+
+    git clone -b v6e https://github.com/Zephyr271828/maxtext.git
+
+    cd maxtext
 
     bash pretrain/llama3_8b_L200_1e-4.sh
 

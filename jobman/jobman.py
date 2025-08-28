@@ -148,7 +148,7 @@ class JobMan:
             stderr=subprocess.DEVNULL
         ).returncode == 0
     
-    def cancel_job(self, job_id):
+    def stop_job(self, job_id):
         key = f"job_{job_id}"
         
         with self.with_meta_lock() as meta:
@@ -188,8 +188,8 @@ class JobMan:
         self.logger.info(f"Deleting job {job_id}...")
     
         try:
-            cancelled = self.cancel_job(job_id)
-            self.logger.debug(f"cancel_job returned {cancelled}")
+            cancelled = self.stop_job(job_id)
+            self.logger.debug(f"stop_job returned {cancelled}")
         except Exception as e:
             self.logger.warning(f"Failed to cancel job {job_id} before deletion: {e}")
 
@@ -207,15 +207,25 @@ class JobMan:
         else:
             self.logger.error(f"Job {job_id} config not found at {config_path}")
         
-        try:
-            shutil.rmtree(job_dir)
-            self.logger.info(f"Deleted job directory {job_dir}")
-        except Exception as e:
-            self.logger.error(f"Failed to delete job directory {job_dir}: {e}")
-
-        self.remove_job_meta(job_id)
         self.logger.info(f"Deleted job {job_id} successfully")
         return True
+    
+    def clean_job(self, job_id):
+        if self.delete_job(job_id):
+            with self.with_meta_lock() as meta:
+                meta_data = meta.get(f"job_{job_id}")
+            job_dir = Path(meta_data.get("job_dir"))
+            try:
+                shutil.rmtree(job_dir)
+                self.logger.info(f"Deleted job directory {job_dir}")
+            except Exception as e:
+                self.logger.error(f"Failed to delete job directory {job_dir}: {e}")
+
+            self.remove_job_meta(job_id)
+            self.logger.info(f"Cleaned logs of {job_id} successfully")
+            return True
+        else:
+            return False
     
     def list_jobs(self):
         rows = []

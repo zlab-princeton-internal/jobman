@@ -1,14 +1,14 @@
 job:
-  name: test-v5
+  name: test-v6
   env_type: docker
   loop: False
 
 tpu:
   allocation_mode: "queued-resources"    # tpu-vm | queued-resources
-  accelerator: v5litepod-32
+  accelerator: v6e-1
   name: yufeng-${tpu.accelerator}
-  zone: us-central1-a
-  version: v2-alpha-tpuv5-lite
+  zone: us-east1-d
+  version: v2-alpha-tpuv6e
   pricing: spot                   
   # spot | ondemand | preemptible
   startup_script: null
@@ -18,9 +18,6 @@ tpu:
     # owner can be used to map tpus to user I think
     purpose: "testing jobman"
 
-gcsfuse:
-  bucket_name: llm_pruning_us_central1
-  mount_path: /home/zephyr/gcs-bucket
 
 ssh:
   private_key: ~/.ssh/id_rsa
@@ -52,32 +49,7 @@ docker:
   workdir: /home/zephyr
   flags: ["--privileged", "--network=host"]
 
-conda:
-  name: fms
-  config_file: assets/fms.yaml
-
-venv:
-  name: maxtext
-  requirements_file: assets/requirements.txt  
-  python: "3.9"  
-
 command:
   cmd: |
-    rm -rf /home/zephyr/maxtext
-    
-    gcloud config set project vision-mix
 
-    gcloud config set compute/zone ${tpu.zone}
-
-    export TPU_PREFIX=${tpu.name}
-
-    export BUCKET_NAME=${gcsfuse.bucket_name}
-
-    cd /home/zephyr/
-
-    git clone -b v6e https://github.com/Zephyr271828/maxtext.git
-
-    cd maxtext
-
-    bash scripts/llama3.1_4b_width_S50_1e-4.sh
   workers: [0] # int | list | "all"

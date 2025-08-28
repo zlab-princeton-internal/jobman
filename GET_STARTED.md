@@ -294,8 +294,9 @@ Below are the most common cli commands you may find useful in jobman.
 | Create a new job | `jobman create <config_path>` |
 | Check all jobs status | `jobman list` |
 | Resume an existing job | `jobman resume <job_id>` |
-| Cancel a specific job | `jobman cancel <job_id>` |
-| Cancel and delete a specific job | `jobman delete <job_id>` |
+| Kill the backend process for a job | `jobman cancel <job_id>` |
+| Kill process and delete TPU resources | `jobman delete <job_id>` |
+| Kill, delete, and clean logs | `jobman clean <job_id>` |
 
 ### Debugging Commands
 | Purpose | Command |

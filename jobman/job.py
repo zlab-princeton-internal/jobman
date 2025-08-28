@@ -119,13 +119,6 @@ class Job:
             self.logger.info(f"Deleted TPU for job {self.id}")
         except Exception as e:
             self.logger.warning(f"Failed to delete TPU for job {self.id}: {e}")
-            
-        # if self.log_file.exists():
-        #     try:
-        #         self.log_file.unlink()
-        #         self.logger.info(f"Deleted log file: {self.log_file}")
-        #     except Exception as e:
-        #         self.logger.warning(f"Failed to delete log file: {e}")
 
 
         

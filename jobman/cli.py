@@ -50,12 +50,12 @@ def resume(job_id):
     jm = JobMan()
     jm.start_job(job_id)
     
-@cli.command(name="cancel")
+@cli.command(name="stop")
 @click.argument("job_id", type=str)
-def cancel(job_id):
+def stop(job_id):
     """Cancel a running job."""
     jm = JobMan()
-    jm.cancel_job(job_id)
+    jm.stop_job(job_id)
     
 @cli.command(name="delete")
 @click.argument("job_id", type=str)
@@ -63,6 +63,13 @@ def delete(job_id):
     """Cancel a running job."""
     jm = JobMan()
     jm.delete_job(job_id)
+    
+@cli.command(name="clean")
+@click.argument("job_id", type=str)
+def clean(job_id):
+    """Cancel a running job."""
+    jm = JobMan()
+    jm.clean_job(job_id)
 
 @cli.command(name="list")
 def list_jobs():
