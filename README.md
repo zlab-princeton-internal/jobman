@@ -48,7 +48,7 @@ jobman list
 ```
 
 ## Get Started 
-Before you start using Jobman, be sure to go through [GET_STARTED.md](GET_STARTED.md). This is vital for you to proceed to run your own jobs.
+Before you start using Jobman (properly), be sure to go through [GET_STARTED.md](GET_STARTED.md). This is vital for you to proceed to run your own jobs.
 
 ## Overall Structure
 This section differs from the Get Started section as it explains briefly how Jobman works. Basically, each job is viewed as a data structure or a class by Jobman, with
@@ -81,6 +81,7 @@ Coming soon
 The first debugging step is to run `jobman run <job_id>` where `<job_id>` is the id of the job you just created. This will run the job in the front end. If this stucks as well, please kindly check if `gcloud` command works on your machine.
 
 ## Contributions & Feedback
-If you have any issues with this project or want to contribute to it, please first open an issue in the `Issues` section. This will be of great help to the maintenance of this project!  
-Also, if you would like to contribute to this project, please refer to [CONTRIBUTING.md](CONTRIBUTING.md).
+- If you have any issues with this project or want to contribute to it, please first open an issue in the `Issues` section. This will be of great help to the maintenance of this project! 
+- You may also contact Yufeng Xu [yx3038@nyu.edu](mailto:yx3038@nyu.edu) for further communication.
+- Also, if you would like to contribute to this project, please refer to [CONTRIBUTING.md](CONTRIBUTING.md).
 
