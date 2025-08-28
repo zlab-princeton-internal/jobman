@@ -1,6 +1,6 @@
 job:
-  name: test-docker
-  env_type: docker
+  name: quick-start
+  env_type: conda
   loop: False
 
 tpu:
@@ -18,18 +18,16 @@ tpu:
     # owner can be used to map tpus to user I think
     purpose: "testing jobman"
 
-ssh:
-  private_key: ~/.ssh/id_rsa
+gcsfuse: null
 
-docker:
-  image: yx3038/maxtext_base_image:latest
-  workdir: /home/zephyr
-  flags: ["--privileged", "--network=host"]
+ssh: null
+
+conda:
+  name: fms
+  config_file: assets/fms.yaml
 
 command:
   cmd: |
-
     pip show jax
-    
     pip show flax
   workers: all # int | list | "all"

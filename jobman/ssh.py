@@ -11,7 +11,6 @@ class SSH:
     def __init__(self, cfg):
         
         self.cfg = cfg
-        self.private_key = Path(self.cfg.ssh.private_key).expanduser()
         self.identities = self.cfg.ssh.get("identities", None)
         
         self.logger = setup_logger(log_file=Path(cfg.job.dir) / 'logs' / 'job.log')
@@ -83,7 +82,6 @@ class SSH:
         scp_cmd = [
             "gcloud", "compute", "tpus", "tpu-vm", "scp", str(key_file), target_path,
             "--worker", str(i), "--zone", self.cfg.tpu.zone,
-            "--ssh-key-file", str(self.private_key),
             "--scp-flag=-o ConnectTimeout=15",
             "--scp-flag=-o StrictHostKeyChecking=no",
             "--scp-flag=-o UserKnownHostsFile=/dev/null",
@@ -102,7 +100,6 @@ class SSH:
             "gcloud", "alpha", "compute", "tpus", "tpu-vm", "ssh", self.cfg.tpu.name,
             "--worker", str(i), "--zone", self.cfg.tpu.zone,
             "--command", cmd,
-            "--ssh-key-file", str(self.private_key),
             "--ssh-flag=-o ConnectTimeout=15",
             "--ssh-flag=-o StrictHostKeyChecking=no",
             "--ssh-flag=-o UserKnownHostsFile=/dev/null",

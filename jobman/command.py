@@ -77,11 +77,10 @@ class COMMAND:
             "gcloud", "alpha", "compute", "tpus", "tpu-vm", "ssh", self.cfg.tpu.name,
             "--zone", self.cfg.tpu.zone,
             f"--worker={i}",
-            "--ssh-key-file", str(self.cfg.ssh.private_key),
             "--ssh-flag=-o ConnectTimeout=15",
             "--ssh-flag=-o StrictHostKeyChecking=no",
             "--ssh-flag=-o UserKnownHostsFile=/dev/null",
-            "--command", f"stdbuf -oL -eL bash -lc '{self.full_cmd}'",
+            "--command", f"stdbuf -oL -eL bash -lc \"{self.full_cmd}\"",
             "--quiet",
         ]
 

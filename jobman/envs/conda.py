@@ -34,9 +34,9 @@ class CONDA(ENV):
         return not any_failed
 
     def setup_worker(self, i):
-        if self._check_worker(i):
-            self.logger.info(f"Worker {i}: Conda already set up.")
-            return
+        # if self._check_worker(i):
+        #     self.logger.info(f"Worker {i}: Conda already set up.")
+        #     return
         
         self.logger.info(f"Worker {i}: Setting up Conda...")
         log_file = Path(self.cfg.job.dir) / "logs" / f"conda_worker_{i}.log"
@@ -52,7 +52,6 @@ class CONDA(ENV):
                     f"{self.cfg.tpu.name}:{remote_env_file}",  # remote path
                     "--zone", self.cfg.tpu.zone,
                     f"--worker={i}",
-                    f"--ssh-key-file={self.cfg.ssh.private_key}",
                     "--quiet",
                 ]
                 subprocess.run(scp_cmd, check=True, stdout=f, stderr=f)
@@ -74,7 +73,6 @@ class CONDA(ENV):
                     "--zone", self.cfg.tpu.zone,
                     f"--worker={i}",
                     "--command", remote_cmd,
-                    f"--ssh-key-file={self.cfg.ssh.private_key}",
                     "--ssh-flag=-o ConnectTimeout=15",
                     "--ssh-flag=-o StrictHostKeyChecking=no",
                     "--ssh-flag=-o UserKnownHostsFile=/dev/null",
@@ -102,7 +100,6 @@ class CONDA(ENV):
                     "--zone", self.cfg.tpu.zone,
                     f"--worker={i}",
                     "--command", remote_cmd,
-                    f"--ssh-key-file={self.cfg.ssh.private_key}",
                     "--quiet",
                 ],
                 check=True,

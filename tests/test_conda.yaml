@@ -27,6 +27,8 @@ conda:
   
 command:
   cmd: |
+
     pip show jax
+    
     pip show flax
   workers: all # int | list | "all"

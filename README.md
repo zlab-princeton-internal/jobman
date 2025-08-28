@@ -6,6 +6,11 @@
 
 Jobman-v2 is a modular and extensible job management system for TPU VMs. 
 
+## News
+
+- **2025-08-28**: Added support for conda and venv as well as [unit tests](tests).
+- **2025-08-22**: Added quota and storage [viewer](https://github.com/Zephyr271828/jobman/blob/jobman-v2/GET_STARTED.md#profiling-commands).
+
 ## Installation
 
 In order to use Jobman, you need to make sure `gcloud` is available on your machine in the first place. You may refer to [the official doc](https://cloud.google.com/sdk/docs/install) to do so.  
@@ -30,6 +35,16 @@ Lastly, build the jobman package from source:
 ```bash
 python -m pip install --upgrade pip
 pip install -e .
+```
+
+### TLDR?
+Try the following command to submit a minimal job:
+```
+jobman create configs/quick_start.yaml
+```
+Then check its status
+```
+jobman list
 ```
 
 ## Get Started 

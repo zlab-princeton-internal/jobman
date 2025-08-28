@@ -20,7 +20,7 @@ This is the doc for you to understand the basics about TPUs and create your firs
   - [Debugging Commands](#debugging-commands)
 
 ## TPU Basics
-Before start working with Jobman, let's go through some basics concepts in TPU:
+Before start working with Jobman, let's go through some basics concepts in TPU (if you're already familiar with TPUs, go to the next section):
 - TPU (Tensor Processing Unit): Google’s hardware for fast machine learning (like a GPU, but optimized for deep learning).
 - TPU VM: The machine you log into to run code directly on TPUs.
 - TPU Pod: A cluster of many TPUs connected together for large-scale training.

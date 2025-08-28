@@ -70,7 +70,6 @@ class VENV(ENV):
                     f"{self.cfg.tpu.name}:{remote_req_file}",
                     "--zone", self.cfg.tpu.zone,
                     f"--worker={i}",
-                    "--ssh-key-file", str(self.cfg.ssh.private_key),
                     "--quiet",
                 ]
                 subprocess.run(scp_cmd, check=True, stdout=f, stderr=f)
@@ -88,7 +87,6 @@ class VENV(ENV):
                     "--zone", self.cfg.tpu.zone,
                     f"--worker={i}",
                     "--command", remote_cmd,
-                    "--ssh-key-file", str(self.cfg.ssh.private_key),
                     "--quiet",
                 ]
                 subprocess.run(ssh_cmd, check=True, stdout=f, stderr=f)
@@ -116,7 +114,6 @@ class VENV(ENV):
             "gcloud", "alpha", "compute", "tpus", "tpu-vm", "ssh", self.cfg.tpu.name,
             "--zone", self.cfg.tpu.zone,
             f"--worker={i}",
-            "--ssh-key-file", str(self.cfg.ssh.private_key),
             "--ssh-flag=-o ConnectTimeout=10",
             "--ssh-flag=-o StrictHostKeyChecking=no",
             "--ssh-flag=-o UserKnownHostsFile=/dev/null",
