@@ -74,15 +74,7 @@ command:
 
     cd /home/zephyr/
 
-    if [ -d 'maxtext/.git' ]; then
-      echo '[INFO] maxtext already exists, pulling latest changes...''
-      cd maxtext
-      git pull origin v6e
-    else
-      echo '[INFO] Cloning maxtext repository...'
-      git clone -b v6e https://github.com/Zephyr271828/maxtext.git
-      cd maxtext
-    fi
+    cd maxtext && git pull origin v6e || (git clone -b v6e https://github.com/Zephyr271828/maxtext.git && cd maxtext)
 
     bash scripts/llama3.1_4b_width_S50_1e-4.sh
   workers: [0] # int | list | "all"

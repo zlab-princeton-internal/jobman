@@ -120,7 +120,7 @@ class DOCKER(ENV):
         workdir_flag = f"-w {self.workdir}" if self.workdir else ""
         flags_str = " ".join(self.flags or [])
 
-        docker_cmd = f"sudo docker run {flags_str} {var_flags_str} {volume_flags_str} {workdir_flag} {self.image} bash -c \'{cmd}\'"
+        docker_cmd = f"sudo docker run {flags_str} {var_flags_str} {volume_flags_str} {workdir_flag} {self.image} bash -c \"{cmd}\""
 
         return docker_cmd
         

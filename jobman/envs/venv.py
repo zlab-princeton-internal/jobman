@@ -135,5 +135,5 @@ class VENV(ENV):
             return False
 
     def patch_command(self, cmd):
-        return f'bash -c "source ~/{self.env_name}/bin/activate && {cmd}"'
+        return f'source ~/{self.env_name}/bin/activate && {cmd}'
     

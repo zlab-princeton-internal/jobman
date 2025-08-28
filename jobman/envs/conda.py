@@ -111,4 +111,4 @@ class CONDA(ENV):
             return Fals
 
     def patch_command(self, cmd):
-        return f'source ~/miniconda/etc/profile.d/conda.sh && conda run -n {self.env_name} bash -c \'{cmd}\''
+        return f'source ~/miniconda/etc/profile.d/conda.sh && conda run -n {self.env_name} bash -c \"{cmd}\"'
