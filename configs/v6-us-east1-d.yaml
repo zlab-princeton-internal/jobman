@@ -63,19 +63,28 @@ venv:
 
 command:
   cmd: |
-    pip show jax
-    pip show flax
 
-    # rm -rf /home/zephyr/maxtext
-    # cp -r /home/zephyr/gcs-bucket/maxtext /home/zephyr/maxtext
-    # mkdir -p /home/zephyr/maxtext/logs
+    gcloud config set project vision-mix
 
-    # gcloud config set project vision-mix
-    # gcloud config set compute/zone ${tpu.zone}
-    # export TPU_PREFIX=${tpu.name}
-    # export BUCKET_NAME=${gcsfuse.bucket_name}
-    # cd /home/zephyr/maxtext
-    # bash scripts/llama3.1_4b_width_S50.sh
+    gcloud config set compute/zone ${tpu.zone}
+
+    export TPU_PREFIX=${tpu.name}
+
+    export BUCKET_NAME=${gcsfuse.bucket_name}
+
+    cd /home/zephyr/
+
+    if [ -d 'maxtext/.git' ]; then
+      echo '[INFO] maxtext already exists, pulling latest changes...''
+      cd maxtext
+      git pull origin v6e
+    else
+      echo '[INFO] Cloning maxtext repository...'
+      git clone -b v6e https://github.com/Zephyr271828/maxtext.git
+      cd maxtext
+    fi
+
+    bash scripts/llama3.1_4b_width_S50.sh
 
     # pip install torch
     # cd /home/zephyr/gcs-bucket/maxtext

@@ -1,0 +1,32 @@
+job:
+  name: test-conda
+  env_type: conda
+  loop: False
+
+tpu:
+  allocation_mode: "queued-resources"    # tpu-vm | queued-resources
+  accelerator: v6e-1
+  name: yufeng-${tpu.accelerator}
+  zone: us-east1-d
+  version: v2-alpha-tpuv6e
+  pricing: spot                   
+  # spot | ondemand | preemptible
+  startup_script: null
+  tags: ["jobman", "experiment"]
+  metadata:
+    owner: "yufeng"
+    # owner can be used to map tpus to user I think
+    purpose: "testing jobman"
+
+ssh:
+  private_key: ~/.ssh/id_rsa
+
+conda:
+  name: fms
+  config_file: assets/fms.yaml
+  
+command:
+  cmd: |
+    pip show jax
+    pip show flax
+  workers: all # int | list | "all"

@@ -1,3 +1,4 @@
+import re
 import subprocess
 import concurrent.futures
 from pathlib import Path
@@ -14,7 +15,24 @@ class VENV(ENV):
         self.python = cfg.venv.get('python', 'python3.10')
         
         self.logger = setup_logger(log_file=Path(cfg.job.dir) / "logs" / "job.log")
-        
+        self.normalize_python()
+
+    def normalize_python(self):
+        val = str(self.python).strip()
+
+        if re.fullmatch(r"3\.\d+", val):
+            normalized = f"python{val}"
+        elif re.fullmatch(r"python3\.\d+", val):
+            normalized = val
+        else:
+            raise ValueError(
+                f"Invalid python version string '{val}'. "
+                "Must be like '3.10' or 'python3.10'."
+            )
+
+        self.logger.debug(f"Normalized python executable: {normalized}")
+        self.python = normalized
+
     def setup(self):
         self.logger.info(f"Setting up Venv environment on TPU workers...")
 
@@ -39,7 +57,7 @@ class VENV(ENV):
         
         self.logger.info(f"Worker {i}: Setting up VENV...")
         log_file = Path(self.cfg.job.dir) / "logs" / f"venv_worker_{i}.log"
-        remote_venv_dir = f"~/venv/{self.env_name}"
+        remote_venv_dir = f"~/{self.env_name}"
         remote_req_file = f"~/requirements_{self.env_name}.txt"
         local_req_file = self.requirements_file
 
@@ -60,7 +78,6 @@ class VENV(ENV):
                 # Step 2: Create virtualenv and install requirements
                 remote_cmd = f"""
                     sudo apt install {self.python}-venv -y
-                    mkdir -p ~/venv
                     {self.python} -m venv {remote_venv_dir} || true && \
                     source {remote_venv_dir}/bin/activate && \
                     pip install --upgrade pip && \
@@ -83,11 +100,43 @@ class VENV(ENV):
     def check(self):
         pass      
         
-    def _check_worker(self, i):
+    def _check_worker(self, i: int) -> bool:
+        """Check if the VENV is already set up on worker i."""
         self.logger.info(f"Worker {i}: Checking VENV setup...")
-        # Implement the logic to check if the VENV is set up correctly
-        return False
+
+        remote_cmd = f"""
+            if [ -f ~/{self.env_name}/bin/activate ]; then
+                echo "VENV_EXISTS"
+            else
+                echo "NO_VENV"
+            fi
+        """
+
+        ssh_cmd = [
+            "gcloud", "alpha", "compute", "tpus", "tpu-vm", "ssh", self.cfg.tpu.name,
+            "--zone", self.cfg.tpu.zone,
+            f"--worker={i}",
+            "--ssh-key-file", str(self.cfg.ssh.private_key),
+            "--ssh-flag=-o ConnectTimeout=10",
+            "--ssh-flag=-o StrictHostKeyChecking=no",
+            "--ssh-flag=-o UserKnownHostsFile=/dev/null",
+            "--command", f"bash -lc \"{remote_cmd}\"",
+            "--quiet",
+        ]
+
+        try:
+            result = subprocess.run(
+                ssh_cmd, capture_output=True, text=True, timeout=30
+            )
+            if "VENV_EXISTS" in result.stdout:
+                self.logger.info(f"Worker {i}: VENV already present.")
+                return True
+            else:
+                return False
+        except Exception as e:
+            self.logger.warning(f"Worker {i}: Failed to check VENV: {e}")
+            return False
 
     def patch_command(self, cmd):
-        return f'bash -c "source {self.path}/bin/activate && {cmd}"'
+        return f'bash -c "source ~/{self.env_name}/bin/activate && {cmd}"'
     

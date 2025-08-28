@@ -9,6 +9,7 @@ class GCSFUSE:
         self.cfg = cfg
         self.bucket = cfg.gcsfuse.bucket_name
         self.mount_path = cfg.gcsfuse.mount_path
+        self.use_sudo = 'sudo' if cfg.job.env_type == 'docker' else '' 
 
         self.logger = setup_logger(log_file=Path(cfg.job.dir) / "logs" / "job.log")
         
@@ -69,13 +70,13 @@ class GCSFUSE:
             fi
 
             echo '[INFO] Creating mount path...'
-            sudo mkdir -p {self.mount_path}
+            {self.use_sudo} mkdir -p {self.mount_path}
 
             echo '[INFO] Mounting bucket...'
-            mountpoint -q {self.mount_path} || sudo gcsfuse --implicit-dirs --dir-mode=777 --file-mode=777 --o allow_other {self.bucket} {self.mount_path}
+            mountpoint -q {self.mount_path} || {self.use_sudo} gcsfuse --implicit-dirs --dir-mode=777 --file-mode=777 --o allow_other {self.bucket} {self.mount_path}
 
             echo '[INFO] Listing contents...'
-            sudo ls -la {self.mount_path}
+            {self.use_sudo} ls -la {self.mount_path}
         """)
 
         ssh_cmd = [

@@ -12,11 +12,14 @@ class SSH:
         
         self.cfg = cfg
         self.private_key = Path(self.cfg.ssh.private_key).expanduser()
-        self.identities = self.cfg.ssh.identities
+        self.identities = self.cfg.ssh.get("identities", None)
         
         self.logger = setup_logger(log_file=Path(cfg.job.dir) / 'logs' / 'job.log')
         
     def setup(self):
+        if self.identities is None:
+            self.logger.info(f"No SSH identities specified. Skipping...")
+            return True
         self.logger.info(f"Copying SSH keys to TPU workers...")
 
         any_failed = False
@@ -72,6 +75,8 @@ class SSH:
             cmd = " && ".join(ssh_setup_cmds)
             self.logger.debug(f"Worker {i}: Running SSH config cmd: {cmd}")
             self._configure_remote_ssh(i, cmd, f)
+        
+        return True
         
     def _copy_key_to_worker(self, i, key_file, f):
         target_path = f"{self.cfg.tpu.name}:~/.ssh/{key_file.name}"

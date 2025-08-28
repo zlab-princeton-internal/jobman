@@ -47,6 +47,6 @@ See the file structure of the source code at `jobman/`
 - [x] add profiler for usage/quota
 - [ ] add an email notifier of job status
 - [x] add user separation
-- [ ] add unit tests
+- [x] add unit tests
 
 ## Contribution Guidelines

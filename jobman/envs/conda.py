@@ -88,7 +88,30 @@ class CONDA(ENV):
     
     def _check_worker(self, i):
         self.logger.info(f"Worker {i}: Checking Conda setup...")
-        return False
+
+        remote_cmd = f"""
+            if [ -x ~/miniconda/bin/conda ]; then
+                source ~/miniconda/etc/profile.d/conda.sh
+                conda env list | grep -q '^{self.env_name}\\s'
+            fi
+        """
+        try:
+            subprocess.run(
+                [
+                    "gcloud", "alpha", "compute", "tpus", "tpu-vm", "ssh", self.cfg.tpu.name,
+                    "--zone", self.cfg.tpu.zone,
+                    f"--worker={i}",
+                    "--command", remote_cmd,
+                    f"--ssh-key-file={self.cfg.ssh.private_key}",
+                    "--quiet",
+                ],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return True
+        except subprocess.CalledProcessError:
+            return Fals
 
     def patch_command(self, cmd):
-        return f'conda run -n {self.env_name} bash -c "{cmd}"'
+        return f'source ~/miniconda/etc/profile.d/conda.sh && conda run -n {self.env_name} bash -c \'{cmd}\''

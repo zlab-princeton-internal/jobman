@@ -63,7 +63,6 @@ venv:
 
 command:
   cmd: |
-    rm -rf /home/zephyr/maxtext
     
     gcloud config set project vision-mix
 
@@ -75,11 +74,17 @@ command:
 
     cd /home/zephyr/
 
-    git clone -b v6e https://github.com/Zephyr271828/maxtext.git
+    if [ -d 'maxtext/.git' ]; then
+      echo '[INFO] maxtext already exists, pulling latest changes...''
+      cd maxtext
+      git pull origin v6e
+    else
+      echo '[INFO] Cloning maxtext repository...'
+      git clone -b v6e https://github.com/Zephyr271828/maxtext.git
+      cd maxtext
+    fi
 
-    cd maxtext
-
-    bash pretrain/llama3_8b_L200_1e-4.sh
+    bash scripts/llama3.1_4b_width_S50_1e-4_warmup_0.1.sh
 
     # export HF_DATASETS_CACHE='/home/zephyr/gcs-bucket/datasets'
     # cd /home/zephyr/gcs-bucket/lm-evaluation-harness

@@ -81,7 +81,7 @@ class COMMAND:
             "--ssh-flag=-o ConnectTimeout=15",
             "--ssh-flag=-o StrictHostKeyChecking=no",
             "--ssh-flag=-o UserKnownHostsFile=/dev/null",
-            "--command", f"stdbuf -oL -eL {self.full_cmd}",
+            "--command", f"stdbuf -oL -eL bash -lc '{self.full_cmd}'",
             "--quiet",
         ]
 
