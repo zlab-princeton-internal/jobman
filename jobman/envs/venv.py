@@ -4,6 +4,16 @@ from pathlib import Path
 from jobman.runner import MultiWorkerRunner
 
 install_cmd = """
+# best-effort unlock dpkg to avoid stuck installs
+if sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; then
+    LOCK_PID=$(sudo lsof -t /var/lib/dpkg/lock-frontend || true)
+    if [ -n "$LOCK_PID" ]; then
+        echo "[WARN] Killing process $LOCK_PID holding dpkg lock"
+        sudo kill -9 $LOCK_PID || true
+        sleep 2
+    fi
+fi
+
 sudo apt install {python}-venv -y
 {python} -m venv {remote_venv_dir} || true && \
 source {remote_venv_dir}/bin/activate && \

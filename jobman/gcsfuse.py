@@ -47,7 +47,8 @@ class GCSFUSE(MultiWorkerRunner):
         
         self.bucket = cfg.gcsfuse.bucket_name
         self.mount_path = cfg.gcsfuse.mount_path
-        self.sudo = 'sudo ' if cfg.job.env_type == 'docker' else '' 
+        # self.sudo = 'sudo ' if cfg.job.env_type == 'docker' else '' 
+        self.sudo = ''
         self.allow_other_opt = '-o allow_other' if self.sudo else ''
         
     def _get_check_steps(self, i):

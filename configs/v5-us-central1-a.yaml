@@ -6,18 +6,13 @@ job:
 
 tpu:
   allocation_mode: "queued-resources"    # tpu-vm | queued-resources
-  accelerator: v5litepod-64
+  accelerator: v5litepod-16
   name: yufeng-${tpu.accelerator}
   zone: us-central1-a
   version: v2-alpha-tpuv5-lite
   pricing: spot                   
   # spot | ondemand | preemptible
-  startup_script: null
-  tags: ["jobman", "experiment"]
-  metadata:
-    owner: "yufeng"
-    # owner can be used to map tpus to user I think
-    purpose: "testing jobman"
+  flags: []
 
 gcsfuse:
   bucket_name: llm_pruning_us_central1
@@ -41,24 +36,23 @@ ssh:
 
 docker:
   image: yx3038/maxtext_base_image:latest
-  env_vars:
-    - HOME=/home/zephyr
-  mount_dirs:
-    - /home/zephyr
-    - /dev
-    - /run
-    - /home/zephyr/.config/gcloud:/root/.config/gcloud
-    # - /home/zephyr/.ssh:/root/.ssh
-  workdir: /home/zephyr
-  flags: ["--privileged", "--network=host"]
+  flags: 
+    - "--privileged"
+    - "--network=host"
+    - "--env HOME=/home/zephyr"
+    - "-v /home/zephyr:/home/zephyr"
+    - "-v /dev:/dev"
+    - "-v /run:/run"
+    - "-v /home/zephyr/.config/gcloud:/root/.config/gcloud"
+    - "-w /home/zephyr"
 
 conda:
   name: fms
   config_file: assets/fms.yaml
 
 venv:
-  name: maxtext
-  requirements_file: assets/requirements.txt  
+  name: maxtext_env
+  requirements_file: assets/requirements_maxtext.txt  
   python: "3.9"  
 
 command:
@@ -74,7 +68,9 @@ command:
 
     cd /home/zephyr/
 
-    cd maxtext &&  git config pull.rebase false && git pull origin v6e || (git clone -b v6e https://github.com/Zephyr271828/maxtext.git && cd maxtext)
+    cd maxtext &&  git config pull.rebase false && git pull origin v6e || (git clone -b v6e https://github.com/Zephyr271828/maxtext.git)
+
+    cd /home/zephyr/maxtext
 
     bash scripts/llama3.1_4b_width_S50_1e-4_warmup_0.05_continue.sh
   workers: [0] # int | list | "all"

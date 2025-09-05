@@ -15,20 +15,11 @@ class TPU:
         self.accelerator = cfg.tpu.accelerator
         self.version = cfg.tpu.version
         self.pricing = cfg.tpu.pricing
-        self.tags = cfg.tpu.tags
-        self.metadata = cfg.tpu.metadata
-        self.startup_script = cfg.tpu.get("startup_script", None)
+        self.flags = cfg.tpu.get("flags", [])
         
         self.mode = cfg.tpu.allocation_mode
         self.log_file = Path(cfg.job.dir) / "logs" / "tpu.log"
         self.logger = setup_logger(name='tpu', log_file=self.log_file)
-        
-    def check_tpu_status(self):
-        """Check current status of the TPU."""
-        if self.mode == "tpu-vm":
-            return self._check_tpu_vm_status()
-        else:
-            return self._check_queued_resource_status()
     
     def _check_tpu_vm_status(self):
         try:
@@ -104,15 +95,6 @@ class TPU:
             base_cmd += ["--preemptible"]
         elif self.pricing == "spot":
             base_cmd += ["--spot"]
-
-        if self.startup_script:
-            base_cmd += ["--metadata", f"startup-script={self.startup_script}"]
-        elif self.metadata:
-            meta_str = ",".join(f"{k}={v}" for k, v in self.metadata.items())
-            base_cmd += ["--metadata", meta_str]
-
-        if self.tags:
-            base_cmd += ["--tags", ",".join(self.tags)]
 
         # Clean empty strings from gcloud command
         cmd = [x for x in base_cmd if x]

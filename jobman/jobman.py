@@ -130,13 +130,16 @@ class JobMan:
         tmux_cmd = f'tmux new-session -d -s {session_name} "{run_cmd} | tee -a {log_file}"'
         subprocess.run(tmux_cmd, shell=True, check=True)
 
-        self.update_job_meta(
-            job_id,
-            status="RUNNING",
-            backend="tmux",
-            session_name=session_name,
-            started_at=datetime.now().isoformat(),
-        )
+        with self.with_meta_lock() as meta:
+            key = f"job_{job_id}"
+            if key not in meta:
+                meta[key] = {"job_id": job_id}
+            meta[key].update(
+                status="RUNNING",
+                backend="tmux",
+                session_name=session_name,
+                started_at=datetime.now().isoformat(),
+            )
 
         self.logger.info(f"Job {job_id} started. See logs at {logs_dir}/job.log.")
         self.logger.info(f"Config snapshot saved at {str(config_path)}. Modify the snapshot if you need to resume the job.")
@@ -152,32 +155,30 @@ class JobMan:
         key = f"job_{job_id}"
         
         with self.with_meta_lock() as meta:
-            job_meta = meta.get(key)
+            job_meta = meta.get(key, None)
 
         if not job_meta:
             self.logger.warning(f"No metadata found for job {job_id}")
             return False
 
-        session_name = job_meta.get("session_name")
+        session_name = job_meta.get("session_name", None)
         if not session_name:
             self.logger.error(f"No tmux session_name found for job {job_id}")
             return False
         
         # First check if session exists
-        session_exists = self.check_tmux_session(session_name)
-
-        if not session_exists:
+        if not self.check_tmux_session(session_name):
             self.logger.warning(f"Session '{session_name}' does not exist. Nothing to cancel.")
             return False
 
         # Try to kill the tmux session
         try:
             subprocess.run(["tmux", "kill-session", "-t", session_name], check=True)
-            self.update_job_meta(
-                job_id,
-                status="FAILED",
-                ended_at=datetime.now().isoformat()
-            )
+            with self.with_meta_lock() as meta:
+                meta[key].update(
+                    status="FAILED",
+                    ended_at=datetime.now().isoformat()
+                )
             self.logger.info(f"Cancelled job {job_id} by killing tmux session {session_name}")
             return True
         except subprocess.CalledProcessError as e:
@@ -201,12 +202,15 @@ class JobMan:
             try:
                 cfg = OmegaConf.load(config_path)
                 job = Job(cfg)
-                job.delete()
+                msg = job.delete()
+                self.logger.info(msg)
             except Exception as e:
                 self.logger.exception(f"Failed to delete job {job_id}: {e}")
         else:
             self.logger.error(f"Job {job_id} config not found at {config_path}")
+            return False
         
+       
         self.logger.info(f"Deleted job {job_id} successfully")
         return True
     
@@ -214,6 +218,9 @@ class JobMan:
         if self.delete_job(job_id):
             with self.with_meta_lock() as meta:
                 meta_data = meta.get(f"job_{job_id}")
+            if not meta_data:
+                self.logger.warning(f"No metadata found for job {job_id}. Cannot clean directory.")
+                return False
             job_dir = Path(meta_data.get("job_dir"))
             try:
                 shutil.rmtree(job_dir)
@@ -288,18 +295,6 @@ class JobMan:
         except Exception as e:
             return [job_id, "ERROR", "ERROR", "ERROR", "ERROR", "ERROR", f"ERROR: {e}"]
         
-    def get_job_meta(self, job_id):
-        with self.with_meta_lock() as meta:
-            return meta.get(f"job_{job_id}", None)
-
-    def update_job_meta(self, job_id, **kwargs):
-        with self.with_meta_lock() as meta:
-            key = f"job_{job_id}"
-            if key not in meta:
-                meta[key] = {"job_id": job_id}
-            meta[key].update(kwargs)
-            meta[key]["last_seen"] = datetime.now().isoformat()
-
     def remove_job_meta(self, job_id):
         with self.with_meta_lock() as meta:
             key = f"job_{job_id}"

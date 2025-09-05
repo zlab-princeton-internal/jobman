@@ -108,14 +108,11 @@ class Job:
             self.logger.info("Retrying job due to error...")
             
     def delete(self):
-        self.logger = setup_logger(stdout=True)
-        self.logger.info(f"Deleting job {self.id}...")
-
         try:
             self.tpu.delete()
-            self.logger.info(f"Deleted TPU for job {self.id}")
+            return f"[INFO] Deleted TPU for job {self.id}"
         except Exception as e:
-            self.logger.warning(f"Failed to delete TPU for job {self.id}: {e}")
+            return f"Failed to delete TPU for job {self.id}: {e}"
 
 
         
