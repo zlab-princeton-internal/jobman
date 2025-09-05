@@ -209,7 +209,6 @@ class JobMan:
         else:
             self.logger.error(f"Job {job_id} config not found at {config_path}")
             return False
-        
        
         self.logger.info(f"Deleted job {job_id} successfully")
         return True

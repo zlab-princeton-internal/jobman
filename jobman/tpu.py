@@ -95,6 +95,8 @@ class TPU:
             base_cmd += ["--preemptible"]
         elif self.pricing == "spot":
             base_cmd += ["--spot"]
+            
+        base_cmd += self.flags
 
         # Clean empty strings from gcloud command
         cmd = [x for x in base_cmd if x]

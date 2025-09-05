@@ -12,12 +12,7 @@ tpu:
   version: tpu-ubuntu2204-base
   pricing: spot
   # spot | ondemand | preemptible
-  startup_script: null
-  tags: ["jobman", "experiment"]
-  metadata:
-    owner: "yufeng"
-    # owner can be used to map tpus to user I think
-    purpose: "pretrain"
+  flags: []
 
 gcsfuse:
   bucket_name: llm_pruning_us_central2_b
@@ -42,16 +37,15 @@ ssh:
 
 docker:
   image: yx3038/maxtext_base_image:latest
-  env_vars:
-    - HOME=/home/zephyr
-  mount_dirs:
-    - /home/zephyr
-    - /dev
-    - /run
-    - /home/zephyr/.config/gcloud:/root/.config/gcloud
-    # - /home/zephyr/.ssh:/root/.ssh
-  workdir: /home/zephyr
-  flags: ["--privileged", "--network=host"]
+  flags: 
+    - "--privileged"
+    - "--network=host"
+    - "--env HOME=/home/zephyr"
+    - "-v /home/zephyr:/home/zephyr"
+    - "-v /dev:/dev"
+    - "-v /run:/run"
+    - "-v /home/zephyr/.config/gcloud:/root/.config/gcloud"
+    - "-w /home/zephyr"
 
 conda:
   name: fms
