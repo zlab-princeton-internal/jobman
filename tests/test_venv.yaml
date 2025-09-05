@@ -1,0 +1,33 @@
+job:
+  name: test-venv
+  env_type: venv
+  loop: False
+  remote_user: zephyr
+
+tpu:
+  allocation_mode: "queued-resources"    # tpu-vm | queued-resources
+  accelerator: v6e-1
+  name: yufeng-${tpu.accelerator}
+  zone: us-east1-d
+  version: v2-alpha-tpuv6e
+  pricing: spot                   
+  # spot | ondemand | preemptible
+  startup_script: null
+  tags: ["jobman", "experiment"]
+  metadata:
+    owner: "yufeng"
+    # owner can be used to map tpus to user I think
+    purpose: "testing jobman"
+
+venv:
+  name: maxtext
+  requirements_file: assets/requirements_maxtext.txt  
+  python: "3.9"  
+
+command:
+  cmd: |
+
+    pip show jax
+    
+    pip show flax
+  workers: all # int | list | "all"

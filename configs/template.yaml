@@ -1,0 +1,56 @@
+job:
+  name: test-jobman
+  env_type: docker
+  loop: true
+  remote_user: zephyr
+
+tpu:
+  allocation_mode: "queued-resources"    # tpu-vm | queued-resources
+  accelerator: v4-128
+  name: yufeng-${tpu.accelerator}
+  zone: us-central2-b
+  version: tpu-ubuntu2204-base
+  pricing: spot
+  # spot | ondemand | preemptible
+  startup_script: null
+  tags: ["jobman", "experiment"]
+  metadata:
+    owner: "yufeng"
+    purpose: "test"
+
+gcsfuse:
+  bucket_name: llm_pruning_us_central2_b
+  mount_path: /home/zephyr/gcs-bucket
+
+ssh:
+  private_key: ~/.ssh/id_rsa
+  identities:
+    - private_key: ~/.ssh/id_rsa
+      public_key: ~/.ssh/id_rsa.pub
+      config_entry: | 
+        Host 10.*
+          IdentityFile ~/.ssh/id_rsa
+          IdentitiesOnly yes
+
+docker:
+  image: yx3038/maxtext_base_image:latest
+  env_vars:
+    - HOME=/home/zephyr
+  mount_dirs:
+    - /home/zephyr
+  workdir: /home/zephyr
+  flags: ["--privileged", "--network=host"]
+
+conda:
+  name: fms
+  config_file: assets/fms.yaml
+
+venv:
+  name: maxtext
+  requirements_file: assets/requirements.txt  
+  python: "python3.9"  
+
+command:
+  cmd: |
+    pip show jax
+  workers: [0] # int | list | "all"
