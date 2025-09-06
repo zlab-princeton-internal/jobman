@@ -28,7 +28,7 @@ class Job:
         self.loop = cfg.job.get('loop', False)
        
         self.logger = setup_logger(log_file=Path(self.dir) / 'logs' / 'job.log')
-        self.tpu = TPU(cfg, logger)
+        self.tpu = TPU(cfg, self.logger)
         self.ssh = SSH(cfg, self.logger) if getattr(cfg, "ssh", None) is not None else None
         self.gcsfuse = GCSFUSE(cfg, self.logger) if getattr(cfg, "gcsfuse", None) is not None else None
         self.command = COMMAND(cfg, self.logger) if getattr(cfg, "command", None) is not None else None
@@ -93,11 +93,3 @@ class Job:
             self.logger.info("Retrying job due to error...")
             
         self.logger.info(f"Job {self.id} finished successfully.")
-            
-    def delete(self):
-        try:
-            self.tpu.delete()
-            del self.tpu
-            return f"[INFO] Deleted TPU for job {self.id}"
-        except Exception as e:
-            return f"Failed to delete TPU for job {self.id}: {e}"

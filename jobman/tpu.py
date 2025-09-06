@@ -1,3 +1,4 @@
+import os
 import time
 import json
 import logging
@@ -96,6 +97,8 @@ class TPU:
             cmd += ["--spot"]
             
         cmd += self.flags
+        
+        cmd = [x for x in cmd if x]
 
         if self.mode == "tpu-vm":
             return self._request_tpu_vm(cmd)
@@ -165,12 +168,10 @@ class TPU:
             return []
     
     def delete(self):
-        self.logger = setup_logger(stdout=True)
-        
-        self.logger.info(f"Deleting TPU {self.name} in zone {self.zone}...")
-        
+        self.logger.info(f"Checking status of TPU VM {self.name} in zone {self.zone}...")
         vm_status = self._check_tpu_vm_status()
         if vm_status != "NOT FOUND":
+            self.logger.info(f"Deleting TPU VM {self.name} in zone {self.zone}...")
             cmd = [
                 "gcloud", "alpha", "compute", "tpus", "tpu-vm", "delete",
                 self.name, "--zone", self.zone, "--quiet"
@@ -184,20 +185,24 @@ class TPU:
         else:
             self.logger.info("TPU VM not found. Skipping deletion.")
             
-        if self.mode == "queued-resources":
-            queue_status = self._check_queued_resource_status()
-            if queue_status != "NOT FOUND":
-                cmd = [
-                    "gcloud", "compute", "tpus", "queued-resources", "delete",
-                    self.name, "--zone", self.zone, "--quiet"
-                ]
-                try:
-                    self.logger.debug(f"Running command: {' '.join(cmd)}")
-                    self._run_command(cmd)
-                    self.logger.info("Queued resources deleted.")
-                except:
-                    self.logger.warning("No Queued resources to delete or deletion failed (possibly already gone).")
-            else:
-                self.logger.info("Queued resources not found. Skipping deletion.")
+        if self.mode == 'tpu-vm':
+            return
+            
+        self.logger.info(f"Checking status of Queued Resources {self.name} in zone {self.zone}...")
+        queue_status = self._check_queued_resource_status()
+        if queue_status != "NOT FOUND":
+            self.logger.info(f"Deleting QUEUE {self.name} in zone {self.zone}...")
+            cmd = [
+                "gcloud", "compute", "tpus", "queued-resources", "delete",
+                self.name, "--zone", self.zone, "--quiet"
+            ]
+            try:
+                self.logger.debug(f"Running command: {' '.join(cmd)}")
+                self._run_command(cmd)
+                self.logger.info("Queued resources deleted.")
+            except:
+                self.logger.warning("No Queued resources to delete or deletion failed (possibly already gone).")
+        else:
+            self.logger.info("Queued resources not found. Skipping deletion.")
             
 
