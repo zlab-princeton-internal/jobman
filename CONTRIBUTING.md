@@ -69,7 +69,7 @@ Note `yield` is used because runner execute one step at a time, and exits immedi
 - [x] add profiler for usage/quota
 - [ ] add an email notifier of job status
 - [x] add user separation
-- [x] add unit tests
+- [ ] add a complete set of unit tests. 
 
 ## Contribution Guidelines
 Here is a simple guideline to contribute to Jobman.
