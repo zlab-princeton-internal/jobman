@@ -5,7 +5,7 @@ job:
   remote_user: zephyr
 
 tpu:
-  allocation_mode: "tpu-vm"    # tpu-vm | queued-resources
+  allocation_mode: "queued-resources"    # tpu-vm | queued-resources
   accelerator: v4-256
   name: yufeng-${tpu.accelerator}
   zone: us-central2-b

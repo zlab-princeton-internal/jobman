@@ -71,5 +71,7 @@ command:
 
     cd maxtext && git config pull.rebase false && git pull origin v6e || (git clone -b v6e https://github.com/Zephyr271828/maxtext.git && cd maxtext)
 
+    cd /home/zephyr/maxtext
+
     bash scripts/llama3.1_4b_depth_S250.sh
   workers: [0] # int | list | "all"

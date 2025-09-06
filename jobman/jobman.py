@@ -76,6 +76,23 @@ class JobMan:
             finally:
                 fcntl.flock(lock_fp, fcntl.LOCK_UN)
             
+    def validate_cfg(self, cfg):
+        if cfg.gcsfuse:
+            self.logger.info
+            zone = cfg.tpu.zone
+            try:
+                region = subprocess.run(
+                    ["gcloud", "storage", "buckets", "describe", f"gs://{cfg.gcsfuse.bucket_name}", "--format=value(location)"],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True
+                ).stdout.strip().lower()
+            except Exception as e:
+                raise Exception(f"Checking bucket gs://{cfg.gcsfuse.bucket_name} region failed: {e}")
+                
+            if not zone.startswith(region):
+                raise ValueError(f"Bucket region {region} does not match TPU VM zone {cfg.tpu.zone}. It's strongly suggested to confirm these configurations match to minimize cost.")
+        
+        return True
+            
     def create_job(self, config_path):
         job_id = self.get_next_job_id()
         user = os.environ['USER']
@@ -91,6 +108,8 @@ class JobMan:
             }
         
         cfg = OmegaConf.load(config_path)
+        self.validate_cfg(cfg)
+        
         cfg.job.id = job_id
         cfg.job.user = user
         cfg.job.dir = str(job_dir)

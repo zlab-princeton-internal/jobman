@@ -46,5 +46,4 @@ class COMMAND(MultiWorkerRunner):
     def _get_setup_steps(self, i):
         if self.full_cmd is None:
             self.full_cmd = self.base_cmd
-        quoted_cmd = shlex.quote(self.full_cmd)
-        yield self._ssh(i, f'echo {quoted_cmd} | bash -s')
+        yield self._ssh(i, f'echo {self.full_cmd} | bash -s')
