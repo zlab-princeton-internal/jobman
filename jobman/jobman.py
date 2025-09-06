@@ -78,7 +78,7 @@ class JobMan:
             
     def validate_cfg(self, cfg):
         if cfg.gcsfuse:
-            self.logger.info
+            self.logger.info("checking TPU-bucket region consistency...")
             zone = cfg.tpu.zone
             try:
                 region = subprocess.run(
@@ -94,6 +94,9 @@ class JobMan:
         return True
             
     def create_job(self, config_path):
+        cfg = OmegaConf.load(config_path)
+        self.validate_cfg(cfg)
+        
         job_id = self.get_next_job_id()
         user = os.environ['USER']
         job_dir = jobs_dir / user / job_id
@@ -106,9 +109,6 @@ class JobMan:
                 "job_dir": str(job_dir),
                 "created_at": datetime.now().isoformat()
             }
-        
-        cfg = OmegaConf.load(config_path)
-        self.validate_cfg(cfg)
         
         cfg.job.id = job_id
         cfg.job.user = user
