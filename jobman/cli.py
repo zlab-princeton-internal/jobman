@@ -14,21 +14,18 @@ from jobman.profilers.storage_report import main as run_storage_report
 def get_cfg(job_id):
     jm = JobMan()  
     user = os.environ.get("USER")
-    key = f'job_{job_id}'
     
     with jm.with_meta_lock() as meta:
-        if key not in meta:
+        if job_id not in meta:
             raise KeyError(f"Job ID not found: {job_id}")
         
-    job_meta = meta[key]
+    job_meta = meta[job_id]
     owner = job_meta['user']
     if owner != user:
         raise PermissionError(f"Meta owner mismatch for {job_id}: owner={owner}, current_user={user}")
     
-    job_dir = job_meta['job_dir']
-    config_path = Path(job_dir) / 'config.yaml'
+    config_path = job_meta['config_path']
     cfg = OmegaConf.load(config_path)
-    print(f"see logs at {job_dir}/logs/job.log")
     
     return cfg
         

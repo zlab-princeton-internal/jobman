@@ -15,6 +15,7 @@ from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from jobman.job import Job
+from jobman.tpu import TPU
 from jobman.utils import setup_logger
 
 BASE_DIR = Path(__file__).resolve().parent 
@@ -66,12 +67,8 @@ class JobMan:
         with open(self.lock_file, "r+") as lock_fp:
             fcntl.flock(lock_fp, fcntl.LOCK_EX)
             try:
-                if self.meta_file.exists():
-                    meta = json.loads(self.meta_file.read_text())
-                else:
-                    meta = {}
+                meta = json.loads(self.meta_file.read_text())
                 yield meta
-                # Write back updated meta
                 self.meta_file.write_text(json.dumps(meta, indent=2))
             finally:
                 fcntl.flock(lock_fp, fcntl.LOCK_UN)
@@ -102,14 +99,6 @@ class JobMan:
         job_dir = jobs_dir / user / job_id
         job_dir.mkdir(parents=True, exist_ok=True)
         
-        with self.with_meta_lock() as meta:
-            meta[f"job_{job_id}"] = {
-                "job_id": job_id,
-                "user": user,
-                "job_dir": str(job_dir),
-                "created_at": datetime.now().isoformat()
-            }
-        
         cfg.job.id = job_id
         cfg.job.user = user
         cfg.job.dir = str(job_dir)
@@ -118,12 +107,18 @@ class JobMan:
         cfg.tpu.name = f"{cfg.tpu.name}_{job_id}"
         OmegaConf.save(cfg, job_dir / "config.yaml")
         
+        with self.with_meta_lock() as meta:
+            meta[job_id] = {
+                "name": cfg.job.name,
+                "user": user,
+                "job_dir": str(job_dir),
+            }
+        
         self.logger.info(f"Created job {job_id}. See info at {job_dir}")
         
         return job_id
     
     def get_next_job_id(self):
-
         with open(self.lock_file, "r+") as lock_fp:
             fcntl.flock(lock_fp, fcntl.LOCK_EX)
             current = int(self.cntr_file.read_text())
@@ -133,10 +128,9 @@ class JobMan:
             return f"{next_id:06d}"
     
     def start_job(self, job_id):
-        
         with self.with_meta_lock() as meta:
-            meta_data = meta.get(f"job_{job_id}")
-        job_dir = Path(meta_data.get("job_dir"))
+            job_meta = meta.get(job_id)
+        job_dir = Path(job_meta.get("job_dir"))
         session_name = f"job_{job_id}"
         
         logs_dir = job_dir / "logs"
@@ -146,21 +140,15 @@ class JobMan:
         config_path = job_dir / "config.yaml"
         run_cmd = f"jobman run {job_id}"
 
-        tmux_cmd = f'tmux new-session -d -s {session_name} "{run_cmd} | tee -a {log_file}"'
-        subprocess.run(tmux_cmd, shell=True, check=True)
-
+        subprocess.run(f'tmux new-session -d -s {session_name} "{run_cmd} | tee -a {log_file}"', shell=True, check=True)
+        
         with self.with_meta_lock() as meta:
-            key = f"job_{job_id}"
-            if key not in meta:
-                meta[key] = {"job_id": job_id}
-            meta[key].update(
-                status="RUNNING",
-                backend="tmux",
+            meta[job_id].update(
                 session_name=session_name,
-                started_at=datetime.now().isoformat(),
+                config_path=str(config_path),
             )
 
-        self.logger.info(f"Job {job_id} started. See logs at {logs_dir}/job.log.")
+        self.logger.info(f"Job {job_id} started. See logs at {str(log_file)}.")
         self.logger.info(f"Config snapshot saved at {str(config_path)}. Modify the snapshot if you need to resume the job.")
     
     def check_tmux_session(self, session_name: str) -> bool:
@@ -171,33 +159,22 @@ class JobMan:
         ).returncode == 0
     
     def stop_job(self, job_id):
-        key = f"job_{job_id}"
-        
         with self.with_meta_lock() as meta:
-            job_meta = meta.get(key, None)
-
-        if not job_meta:
-            self.logger.warning(f"No metadata found for job {job_id}")
-            return False
+            if job_id not in meta:
+                raise ValueError(f"No metadata found for job {job_id}")
+            job_meta = meta[job_id]
 
         session_name = job_meta.get("session_name", None)
         if not session_name:
-            self.logger.error(f"No tmux session_name found for job {job_id}")
+            self.logger.error(f"No tmux session found for job {job_id}")
             return False
         
-        # First check if session exists
         if not self.check_tmux_session(session_name):
             self.logger.warning(f"Session '{session_name}' does not exist. Nothing to cancel.")
             return False
 
-        # Try to kill the tmux session
         try:
             subprocess.run(["tmux", "kill-session", "-t", session_name], check=True)
-            with self.with_meta_lock() as meta:
-                meta[key].update(
-                    status="FAILED",
-                    ended_at=datetime.now().isoformat()
-                )
             self.logger.info(f"Cancelled job {job_id} by killing tmux session {session_name}")
             return True
         except subprocess.CalledProcessError as e:
@@ -205,54 +182,41 @@ class JobMan:
             return False
             
     def delete_job(self, job_id):
-        self.logger.info(f"Deleting job {job_id}...")
-    
-        try:
-            cancelled = self.stop_job(job_id)
-            self.logger.debug(f"stop_job returned {cancelled}")
-        except Exception as e:
-            self.logger.warning(f"Failed to cancel job {job_id} before deletion: {e}")
-
+        self.stop_job(job_id)
+            
         with self.with_meta_lock() as meta:
-            meta_data = meta.get(f"job_{job_id}")
-        job_dir = Path(meta_data.get("job_dir"))
-        config_path = job_dir / "config.yaml"
+            job_meta = meta[job_id]
+        config_path = Path(job_meta.get("config_path"))
         if config_path.exists():
             try:
                 cfg = OmegaConf.load(config_path)
-                job = Job(cfg)
-                msg = job.delete()
-                del job
-                self.logger.info(msg)
+                tpu = TPU(cfg, self.logger)
+                tpu.delete()
             except Exception as e:
                 self.logger.exception(f"Failed to delete job {job_id}: {e}")
         else:
             self.logger.error(f"Job {job_id} config not found at {config_path}")
             return False
        
-        self.logger.info(f"Deleted job {job_id} successfully")
         return True
     
     def clean_job(self, job_id):
         if not self.delete_job(job_id):
+            self.logger(f"Job {job_id} deletion failed")
             return False
         
         with self.with_meta_lock() as meta:
-            meta_data = meta.get(f"job_{job_id}")
-            
-        if not meta_data:
-            self.logger.warning(f"No metadata found for job {job_id}. Cannot clean directory.")
-            return False
+            job_meta = meta[job_id]
         
-        job_dir = Path(meta_data.get("job_dir"))
+        job_dir = Path(job_meta.get("job_dir"))
         try:
             shutil.rmtree(job_dir, ignore_errors=True)
             self.logger.info(f"Deleted job directory {job_dir}")
         except Exception as e:
             self.logger.error(f"Failed to delete job directory {job_dir}: {e}")
-            return False
 
-        self.remove_job_meta(job_id)
+        with self.with_meta_lock() as meta:
+            del meta[job_id]
         self.logger.info(f"Cleaned logs of {job_id} successfully")
         return True
     
@@ -262,10 +226,9 @@ class JobMan:
         with self.with_meta_lock() as meta:
             with ThreadPoolExecutor(max_workers=8) as executor:
                 futures = {
-                    executor.submit(self.fetch_job_info, metadata): job_key
-                    for job_key, metadata in meta.items()
+                    executor.submit(self.fetch_job_info, job_id, metadata): job_id
+                    for job_id, metadata in meta.items()
                 }
-
                 for future in as_completed(futures):
                     rows.append(future.result())
 
@@ -273,15 +236,11 @@ class JobMan:
         headers = ["Job ID", "User", "Name", "Accelerator", "Zone", "Host0 IP", "Status"]
         print(tabulate(rows, headers=headers, tablefmt="github"))
             
-    def fetch_job_info(self, meta):
+    def fetch_job_info(self, job_id, job_meta):
         try:
-            job_id = meta.get("job_id")
-            user = meta.get("user")
-            
-            # started = meta.get("started_at", meta.get("created_at", "N/A"))
-            session_name = meta.get("session_name", f"job_{job_id}")
-
-            config_path = Path(meta.get("job_dir")) / "config.yaml"
+            user = job_meta.get("user")
+            session_name = job_meta.get("session_name", f"job_{job_id}")
+            config_path = Path(job_meta.get("job_dir")) / "config.yaml"
             if config_path.exists():
                 cfg = OmegaConf.load(config_path)
                 job_name = cfg.job.name
@@ -302,8 +261,7 @@ class JobMan:
                         cfg.tpu.name, "--zone", cfg.tpu.zone, "--format=value(state)"
                     ],
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-                )
-                gcloud_state = gcloud_state.stdout.strip()
+                ).stdout.strip()
                 if self.check_tmux_session(session_name):
                     status = "RUNNING" if gcloud_state in {"READY", "ACTIVE"} else "QUEUEING"
                 elif cfg:
@@ -316,9 +274,3 @@ class JobMan:
             return [job_id, user, job_name, accelerator, zone, host0_ip, status]
         except Exception as e:
             return [job_id, "ERROR", "ERROR", "ERROR", "ERROR", "ERROR", f"ERROR: {e}"]
-        
-    def remove_job_meta(self, job_id):
-        with self.with_meta_lock() as meta:
-            key = f"job_{job_id}"
-            if key in meta:
-                del meta[key]

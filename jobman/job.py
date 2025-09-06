@@ -28,7 +28,7 @@ class Job:
         self.loop = cfg.job.get('loop', False)
        
         self.logger = setup_logger(log_file=Path(self.dir) / 'logs' / 'job.log')
-        self.tpu = TPU(cfg)
+        self.tpu = TPU(cfg, logger)
         self.ssh = SSH(cfg, self.logger) if getattr(cfg, "ssh", None) is not None else None
         self.gcsfuse = GCSFUSE(cfg, self.logger) if getattr(cfg, "gcsfuse", None) is not None else None
         self.command = COMMAND(cfg, self.logger) if getattr(cfg, "command", None) is not None else None
@@ -48,16 +48,13 @@ class Job:
     def request(self):
         self.logger.info("Checking TPU status...")
         ready = self.tpu.check_and_maybe_delete()
-        if ready:
-            self.cfg.tpu.ips = self.tpu.get_ips()
-            OmegaConf.save(self.cfg, Path(self.dir) / "config.yaml")
-            return True
-         
-        self.logger.info("Requesting TPU...")
-        success = self.tpu.request()
-        if not success:
-            self.logger.error("TPU allocation failed.")
-            return False
+        
+        if not ready:
+            self.logger.info("Requesting TPU...")
+            success = self.tpu.request()
+            if not success:
+                self.logger.error("TPU allocation failed.")
+                return False
         
         self.cfg.tpu.ips = self.tpu.get_ips()
         OmegaConf.save(self.cfg, Path(self.dir) / "config.yaml")
@@ -67,7 +64,6 @@ class Job:
         for module in [self.ssh, self.gcsfuse, self.env]:
             if module and not module.setup():
                 return False
-        
         return True
     
     def execute(self):
@@ -77,24 +73,13 @@ class Job:
     def run(self):
         while True:
             try:
-                if not self.request():
-                    if not self.loop:
-                        return False
-                    continue
-
-                if not self.setup():
-                    self.logger.error(f"Job {self.id} setup failed.")
-                    if not self.loop:
-                        return False
-                    continue  # try again
-
-                if not self.execute():
-                    self.logger.error(f"Job {self.id} execution failed.")
-                    if not self.loop:
-                        return False
-                    continue  # try again
-
-                self.logger.info(f"Job {self.id} finished successfully.")
+                for action, step in zip(
+                    ['request', 'setup', 'execution'],
+                    [self.request, self.setup, self.execute]
+                ):
+                    if not step():
+                        self.logger.error(f"Job {self.id} {action} failed.")
+                        break
 
             except KeyboardInterrupt:
                 self.logger.warning("Job interrupted by user")
@@ -107,17 +92,12 @@ class Job:
                 return False
             self.logger.info("Retrying job due to error...")
             
+        self.logger.info(f"Job {self.id} finished successfully.")
+            
     def delete(self):
-        
         try:
             self.tpu.delete()
             del self.tpu
             return f"[INFO] Deleted TPU for job {self.id}"
         except Exception as e:
             return f"Failed to delete TPU for job {self.id}: {e}"
-        
-        
-
-
-        
-        
