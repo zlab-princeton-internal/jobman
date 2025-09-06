@@ -12,12 +12,7 @@ tpu:
   version: v2-alpha-tpuv6e
   pricing: spot                   
   # spot | ondemand | preemptible
-  startup_script: null
-  tags: ["jobman", "experiment"]
-  metadata:
-    owner: "yufeng"
-    # owner can be used to map tpus to user I think
-    purpose: "testing jobman"
+  flags: []
 
 docker:
   image: yx3038/maxtext_base_image:latest

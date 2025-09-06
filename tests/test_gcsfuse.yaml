@@ -12,13 +12,8 @@ tpu:
   version: v2-alpha-tpuv6e
   pricing: spot                   
   # spot | ondemand | preemptible
-  startup_script: null
-  tags: ["jobman", "experiment"]
-  metadata:
-    owner: "yufeng"
-    # owner can be used to map tpus to user I think
-    purpose: "testing jobman"
-
+  flags: []
+  
 gcsfuse:
   bucket_name: llm_pruning_us_east1_d
   mount_path: /home/zephyr/gcs-bucket

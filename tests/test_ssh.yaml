@@ -12,19 +12,14 @@ tpu:
   version: v2-alpha-tpuv6e
   pricing: spot                   
   # spot | ondemand | preemptible
-  startup_script: null
-  tags: ["jobman", "experiment"]
-  metadata:
-    owner: "yufeng"
-    # owner can be used to map tpus to user I think
-    purpose: "testing jobman"
+  flags: []
 
 ssh:
   identities:
     - private_key: ~/.ssh/id_rsa
       public_key: ~/.ssh/id_rsa.pub
       config_entry: | 
-        Host 10.*
+        Host 10.* 34.* 35.*
           IdentityFile ~/.ssh/id_rsa
           IdentitiesOnly yes
     - private_key: ~/.ssh/id_ed25519_github
