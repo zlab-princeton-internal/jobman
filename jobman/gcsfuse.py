@@ -53,14 +53,14 @@ class GCSFUSE(MultiWorkerRunner):
         
     def _get_check_steps(self, i):
         yield self._ssh(i, "command -v gcsfuse >/dev/null 2>&1")
-        yield self._ssh(i, f"mountpoint -q {shlex.quote(self.mount_path)}")
+        yield self._ssh(i, f"mountpoint -q {self.mount_path}")
 
     def _get_setup_steps(self, i):
         yield self._ssh(i, install_script)
         yield self._ssh(i, mount_script.format(
             sudo=self.sudo,
-            mnt=shlex.quote(self.mount_path),
-            bucket=shlex.quote(self.bucket),
+            mnt=self.mount_path,
+            bucket=self.bucket,
             allow_other_opt=self.allow_other_opt
         ))
 

@@ -1,12 +1,12 @@
 job:
   name: test-v4
-  env_type: docker
+  env_type: venv
   loop: true
   remote_user: zephyr
 
 tpu:
   allocation_mode: "tpu-vm"    # tpu-vm | queued-resources
-  accelerator: v4-128
+  accelerator: v4-256
   name: yufeng-${tpu.accelerator}
   zone: us-central2-b
   version: tpu-ubuntu2204-base
@@ -52,9 +52,9 @@ conda:
   config_file: assets/fms.yaml
 
 venv:
-  name: maxtext
-  requirements_file: assets/requirements.txt  
-  python: "3.9"  
+  name: maxtext_env
+  requirements_file: assets/requirements_maxtext.txt  
+  python: "3.10"  
 
 command:
   cmd: |
@@ -69,11 +69,8 @@ command:
 
     cd /home/zephyr/
 
-    cd maxtext &&  git config pull.rebase false && git pull origin v6e || (git clone -b v6e https://github.com/Zephyr271828/maxtext.git && cd maxtext)
+    cd maxtext && git config pull.rebase false && git pull origin v6e || (git clone -b v6e https://github.com/Zephyr271828/maxtext.git && cd maxtext)
 
-    bash scripts/llama3.1_4b_width_S50_1e-4_warmup_0.1.sh
+    bash pretrain/llama3_8b_L200_1e-4.sh
 
-    # export HF_DATASETS_CACHE='/home/zephyr/gcs-bucket/datasets'
-    # cd /home/zephyr/gcs-bucket/lm-evaluation-harness
-    # bash scripts/test_orbax_eval.sh
   workers: [0] # int | list | "all"

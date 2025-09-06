@@ -1,4 +1,4 @@
-name: fms
+name: fms-env
 channels:
   - conda-forge
   - pytorch

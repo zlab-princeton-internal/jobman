@@ -2,6 +2,7 @@ import re
 import os
 import math
 import json
+import time
 import fcntl
 import shutil
 import logging
@@ -94,9 +95,8 @@ class JobMan:
         cfg.job.user = user
         cfg.job.dir = str(job_dir)
         cfg.tpu.num_workers = infer_num_workers(cfg.tpu.accelerator)
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        cfg.job.name = f"{cfg.job.name}_{ts}"
-        cfg.tpu.name = f"{cfg.tpu.name}_{ts}"
+        cfg.job.name = f"{cfg.job.name}_{job_id}"
+        cfg.tpu.name = f"{cfg.tpu.name}_{job_id}"
         OmegaConf.save(cfg, job_dir / "config.yaml")
         
         self.logger.info(f"Created job {job_id}. See info at {job_dir}")
@@ -203,6 +203,7 @@ class JobMan:
                 cfg = OmegaConf.load(config_path)
                 job = Job(cfg)
                 msg = job.delete()
+                del job
                 self.logger.info(msg)
             except Exception as e:
                 self.logger.exception(f"Failed to delete job {job_id}: {e}")
@@ -214,24 +215,27 @@ class JobMan:
         return True
     
     def clean_job(self, job_id):
-        if self.delete_job(job_id):
-            with self.with_meta_lock() as meta:
-                meta_data = meta.get(f"job_{job_id}")
-            if not meta_data:
-                self.logger.warning(f"No metadata found for job {job_id}. Cannot clean directory.")
-                return False
-            job_dir = Path(meta_data.get("job_dir"))
-            try:
-                shutil.rmtree(job_dir)
-                self.logger.info(f"Deleted job directory {job_dir}")
-            except Exception as e:
-                self.logger.error(f"Failed to delete job directory {job_dir}: {e}")
-
-            self.remove_job_meta(job_id)
-            self.logger.info(f"Cleaned logs of {job_id} successfully")
-            return True
-        else:
+        if not self.delete_job(job_id):
             return False
+        
+        with self.with_meta_lock() as meta:
+            meta_data = meta.get(f"job_{job_id}")
+            
+        if not meta_data:
+            self.logger.warning(f"No metadata found for job {job_id}. Cannot clean directory.")
+            return False
+        
+        job_dir = Path(meta_data.get("job_dir"))
+        try:
+            shutil.rmtree(job_dir, ignore_errors=True)
+            self.logger.info(f"Deleted job directory {job_dir}")
+        except Exception as e:
+            self.logger.error(f"Failed to delete job directory {job_dir}: {e}")
+            return False
+
+        self.remove_job_meta(job_id)
+        self.logger.info(f"Cleaned logs of {job_id} successfully")
+        return True
     
     def list_jobs(self):
         rows = []

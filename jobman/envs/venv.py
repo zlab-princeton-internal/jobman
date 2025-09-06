@@ -58,9 +58,10 @@ class VENV(MultiWorkerRunner):
         self.python = normalized
         
     def _get_check_steps(self, i):
-        yield self._ssh(i, check_cmd.format(
-            remote_venv_dir=self.remote_venv_dir
-        ))
+        yield -1
+        # yield self._ssh(i, check_cmd.format(
+        #     remote_venv_dir=self.remote_venv_dir
+        # ))
         
     def _get_setup_steps(self, i):
         

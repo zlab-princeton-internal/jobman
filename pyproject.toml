@@ -13,6 +13,7 @@ dependencies = [
     "google-api-python-client", 
     "google-auth",
     "google-cloud-bigquery",
+    "google-cloud-storage",
     "hydra-core", 
     "omegaconf", 
     "pydantic",

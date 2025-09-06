@@ -1,7 +1,7 @@
 job:
   name: test-v5
-  env_type: docker
-  loop: False
+  env_type: venv
+  loop: true
   remote_user: zephyr
 
 tpu:
@@ -24,7 +24,7 @@ ssh:
     - private_key: ~/.ssh/id_rsa
       public_key: ~/.ssh/id_rsa.pub
       config_entry: | 
-        Host 10.*
+        Host 10.* 34.* 35.*
           IdentityFile ~/.ssh/id_rsa
           IdentitiesOnly yes
     - private_key: ~/.ssh/id_ed25519_github
@@ -52,9 +52,9 @@ conda:
   config_file: assets/fms.yaml
 
 venv:
-  name: maxtext
-  requirements_file: assets/requirements.txt  
-  python: "3.9"  
+  name: maxtext_env
+  requirements_file: assets/requirements_maxtext.txt  
+  python: "3.10"  
 
 command:
   cmd: |
@@ -69,7 +69,7 @@ command:
 
     cd /home/zephyr/
 
-    cd maxtext && git pull origin v6e || (git clone -b v6e https://github.com/Zephyr271828/maxtext.git && cd maxtext)
+    cd maxtext && git config pull.rebase false && git pull origin v6e || (git clone -b v6e https://github.com/Zephyr271828/maxtext.git && cd maxtext)
 
-    bash scripts/llama3.1_4b_depth_S50_3e-4_warmup_0.05.sh
+    bash scripts/llama3.1_4b_depth_S250.sh
   workers: [0] # int | list | "all"

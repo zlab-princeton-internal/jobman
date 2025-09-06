@@ -23,6 +23,7 @@ class MultiWorkerRunner:
 
     def _ssh(self, i:int, script:str) -> int:
         logf = self._per_worker_log(i)
+        
         cmd = [
             "gcloud", "alpha", "compute", "tpus", "tpu-vm", "ssh", 
             f"{self.cfg.job.remote_user}@{self.cfg.tpu.name}",
@@ -33,7 +34,12 @@ class MultiWorkerRunner:
             "--ssh-flag=-o UserKnownHostsFile=/dev/null",
             "--command", f"bash -lc {shlex.quote(script)}",
             "--quiet",
+            "--no-user-output-enabled",
         ]
+        
+        private_key = getattr(self.cfg, "ssh", {}).get("private_key", None)
+        if private_key:
+            cmd.append(f"--ssh-flag=-i {private_key}")
         if os.environ.get("JOBMAN_DEBUG", "").lower() in ("1", "true", "yes", "on"):
             self.logger.debug(' '.join(cmd))
         with open(logf, "a") as f:
@@ -49,6 +55,10 @@ class MultiWorkerRunner:
             f"--worker={i}",
             "--quiet",
         ]
+        private_key = getattr(self.cfg, "ssh", {}).get("private_key", None)
+        if private_key:
+            cmd.append(f"--scp-flag=-i {private_key}")
+        
         if os.environ.get("JOBMAN_DEBUG", "").lower() in ("1", "true", "yes", "on"):
             self.logger.debug(' '.join(cmd))
         if recursive:
