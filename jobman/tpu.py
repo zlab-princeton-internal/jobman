@@ -169,7 +169,10 @@ class TPU:
     
     def delete(self):
         self.logger.info(f"Checking status of TPU VM {self.name} in zone {self.zone}...")
-        vm_status = self._check_tpu_vm_status()
+        try:
+            vm_status = self._check_tpu_vm_status()
+        except:
+            vm_status = "NOT FOUND"
         if vm_status != "NOT FOUND":
             self.logger.info(f"Deleting TPU VM {self.name} in zone {self.zone}...")
             cmd = [
@@ -189,7 +192,10 @@ class TPU:
             return
             
         self.logger.info(f"Checking status of Queued Resources {self.name} in zone {self.zone}...")
-        queue_status = self._check_queued_resource_status()
+        try:
+            queue_status = self._check_queued_resource_status()
+        except:
+            queue_status = "NOT FOUND"
         if queue_status != "NOT FOUND":
             self.logger.info(f"Deleting QUEUE {self.name} in zone {self.zone}...")
             cmd = [
