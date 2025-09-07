@@ -140,6 +140,21 @@ tpu:
   # spot | ondemand | preemptible
   flags: null
 ```
+
+Side Note: my personal experience with using different types of TPUs.  
+In my use cases, I train 2B-8B large language models with 64-256 TPU cores. You may refer to the speed comparison profiled by Taiming Lu and me:
+| Device | Tokens/s | Tokens/h | Tokens/day | Comparison |
+|:--:|:--:|:--:|:--:|:--:|
+| L40 | 1,146 | 4.1M | 0.10B | 45\% |
+| A100 | 2,570 | 9.3M | 0.22B | 100\% |
+| H100 | 3,855 | 13M | 0.33B | 150\% |
+| v4-1 | 1,079 | 3.9M | 0.09B | 42\% |
+| v5e-1(estimated) | 1,203 | 4.3M | 0.10B | 46\% |
+| v6e-1 | 3,627 | 13M | 0.31B | 141\% |
+
+Undoubtedly v6e TPUs are the strongest TPUs, but in our experience v6e tpus (v6e-{32,64,...})have very long queue time and are usually preempted in the blink of an eye. Therefore, v4 and v5e are more recommended for stable experiments.   
+For more information, see [Boya's doc](https://github.com/boyazeng/tpu_intro/blob/main/TPU.md).
+
 ---
 
 ### `gcsfuse`
@@ -239,7 +254,7 @@ conda:
 
 - **`name`**: Venv name (e.g., `maxtext-venv`). Will be saved at `~/<name>`.
 - **`requirements_file`**: `pip` requirements file path.
-- **`python`**: Python version for the venv (e.g., `"3.10"`).  
+- **`python`**: Python version for the venv (e.g., `"3.10"` or `"python3.10"`).  
 
 e.g.
 ```yml

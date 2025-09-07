@@ -80,6 +80,8 @@ Coming soon
 1. **Q:** I ran `jobman create <config_path>` but nothing happens. What should I do?  
 **A:** Under the hood, `jobman create` creates the job directory and starts the job process with tmux in the backend. If the job process fails, it fails silently since it's in tmux.  
 The first debugging step is to run `jobman run <job_id>` where `<job_id>` is the id of the job you just created. This will run the job in the front end. If this stucks as well, please kindly check if `gcloud` command works on your machine.
+2. **Q:** How can I validate the job status displayed in `jobman list`?  
+**A:** Although in my use cases, the 4 jobs states (QUEUEING, RUNNING, IDLE, DEAD) are mostly accurate, it'a always a good idea to verify the TPU state on Google Cloud Console. If you observe inconsistencies between `jobman list` and Google Cloud Console, kindly open an issue and report the bug.
 
 ## Contributions & Feedback
 - If you have any issues with this project or want to contribute to it, please first open an issue in the `Issues` section. This will be of great help to the maintenance of this project! 
