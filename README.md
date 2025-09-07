@@ -8,6 +8,7 @@ Jobman-v2 is a modular and extensible job management system for TPU VMs.
 
 ## News
 
+- **2025-09-06**: Added an [automatic checker](https://github.com/Zephyr271828/jobman/blob/jobman-exp/jobman/jobman.py#L76) to verify the bucket region and the TPU VM zone match, so that you can ensure your storage costs are minimized.
 - **2025-08-28**: Added support for conda and venv as well as [unit tests](tests).
 - **2025-08-22**: Added quota and storage [viewer](https://github.com/Zephyr271828/jobman/blob/jobman-v2/GET_STARTED.md#profiling-commands).
 

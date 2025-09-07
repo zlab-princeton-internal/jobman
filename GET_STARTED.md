@@ -99,6 +99,7 @@ Defines global job behavior.
   *Tip:* Encode model, scale, and purpose (e.g., `pretrain-llama3-8b-200b-tune`).
 - **`env_type`**: Runtime environment. `docker` means all work happens inside a container. You may also choose `conda` or `venv`.
 - **`loop`**: If `true`, the job restarts automatically on exit (useful for spot/preemptible TPUs or iterative jobs).
+- **`remote_user`**: User name you use on the remote machine.
 
 e.g.
 ```yml
@@ -106,6 +107,7 @@ job:
   name: pretrain-llama3-8b-200b-tune
   env_type: docker # docker | conda | venv
   loop: true
+  remote_user: zephyr
 ```
 ---
 
@@ -124,9 +126,7 @@ Requests and configures TPU resources.
   - `spot`: cheapest; can be evicted.  
   - `ondemand`: standard pricing.  
   - `preemptible`: legacy term on some platforms; similar to spot.
-- **`startup_script`**: Optional path to a script run on VM boot (e.g., install OS packages). Use `null` to skip.
-- **`tags`**: Freeform labels (e.g., `["jobman","experiment"]`) for filtering.
-- **`metadata`**: Key–value metadata stored on the TPU resource (e.g., `owner`, `purpose`) for team accounting/search.
+- **`flags`**: Additional flags you want to use when requesting the TPU resource.
 
 e.g
 ```yml
@@ -138,12 +138,7 @@ tpu:
   version: tpu-ubuntu2204-base
   pricing: spot
   # spot | ondemand | preemptible
-  startup_script: null
-  tags: ["jobman", "experiment"]
-  metadata:
-    owner: "yufeng"
-    # owner can be used to map tpus to user I think
-    purpose: "pretrain"
+  flags: null
 ```
 ---
 
@@ -166,10 +161,11 @@ gcsfuse:
 ### `ssh`
 Prepares SSH keys and host configs on the TPU VM(s).
 
-- **`private_key`**: Default SSH private key you use to connect to the VM from local machine (e.g., `~/.ssh/id_rsa`).
+- **`private_key`**: Default SSH private key you use to connect to the VM from local machine (e.g., `~/.ssh/id_rsa`). **This is optional** since you can log into the gcloud, a key will be automatically generated and saved at `~/.config/gcloud/credentials.db`.
 - **`identities`**: Additional identities and inline `ssh_config` snippets.
   - `config_entry` blocks let you preconfigure hosts (e.g., `Host 10.*` for intra-pod SSH, `Host github.com` for git).
   - Ensures multi-host jobs can SSH among nodes; also avoids manual `ssh-add`.
+  - identities is also optional.
 
 e.g.
 ```yml
@@ -179,7 +175,7 @@ ssh:
     - private_key: ~/.ssh/id_rsa
       public_key: ~/.ssh/id_rsa.pub
       config_entry: | 
-        Host 10.*
+        Host 10.* 34.* 35.*
           IdentityFile ~/.ssh/id_rsa
           IdentitiesOnly yes
     - private_key: ~/.ssh/id_ed25519_github
@@ -196,28 +192,28 @@ ssh:
 Container runtime settings for reproducible environments.
 
 - **`image`**: Docker image to run (e.g., `yx3038/maxtext_base_image:latest`). Pin versions for reproducibility.
-- **`env_vars`**: Environment variables injected into the container (e.g., `HOME=/home/zephyr`).
-- **`mount_dirs`**: Host paths mounted inside the container.  
-  - Common mounts: home dir, `/dev`, `/run`, GCloud config, SSH (if you need `git clone` over SSH).
-- **`workdir`**: Default working directory inside the container.
+- **`env_vars`**: 
 - **`flags`**: Extra `docker run` flags.  
-  - `--privileged`: grants extended privileges (needed for some low-level ops).  
+  - `-u <user_id>`: Specify user id, permission, and ownership inside of the container.
+  - `-v <volume>`: Host paths mounted inside the container.
+  - `-w <work_dir>`: Default working directory inside the container.
+  - `--env <env_var>`: Environment variables injected into the container.
   - `--network=host`: shares host network (useful for TPU comms, faster GCS access).
+  - `--privileged`: grants extended privileges (needed for some low-level ops).  
 
 e.g.
 ```yml
 docker:
   image: yx3038/maxtext_base_image:latest
-  env_vars:
-    - HOME=/home/zephyr
-  mount_dirs:
-    - /home/zephyr
-    - /dev
-    - /run
-    - /home/zephyr/.config/gcloud:/root/.config/gcloud
-    # - /home/zephyr/.ssh:/root/.ssh
-  workdir: /home/zephyr
-  flags: ["--privileged", "--network=host"]
+  flags: 
+    - "--privileged"
+    - "--network=host"
+    - "--env HOME=/home/zephyr"
+    - "-v /home/zephyr:/home/zephyr"
+    - "-v /dev:/dev"
+    - "-v /run:/run"
+    - "-v /home/zephyr/.config/gcloud:/root/.config/gcloud"
+    - "-w /home/zephyr"
 ```
 
 ---
@@ -225,15 +221,15 @@ docker:
 ### `conda`
 (Optional) Create/use a Conda env inside the container.
 
-- **`name`**: Conda env name (e.g., `fms`).
-- **`config_file`**: Path to an `environment.yaml` with Conda deps.  
+- **`name`**: Conda env name (e.g., `maxtext-conda`). Will be saved at `~/<name>`.
+- **`config_file`**: Path to an `maxtext-env.yaml` with Conda deps.  
   *Tip:* Use either Conda *or* venv—keeping both increases maintenance.
 
 e.g.
 ```yml
 conda:
-  name: fms
-  config_file: assets/fms.yaml
+  name: maxtext-conda
+  config_file: assets/maxtext-env.yaml
 ```
 
 ---
@@ -241,35 +237,27 @@ conda:
 ### `venv`
 (Optional) Create/use a Python virtualenv inside the container.
 
-- **`name`**: Venv name (e.g., `maxtext`).
+- **`name`**: Venv name (e.g., `maxtext-venv`). Will be saved at `~/<name>`.
 - **`requirements_file`**: `pip` requirements file path.
-- **`python`**: Python version for the venv (e.g., `"3.9"`).  
-  *Tip:* Match your framework’s supported versions (JAX/TF/PyTorch constraints).
+- **`python`**: Python version for the venv (e.g., `"3.10"`).  
 
 e.g.
 ```yml
 venv:
-  name: maxtext
+  name: maxtext-venv
   requirements_file: assets/requirements.txt  
-  python: "python3.9" 
+  python: "python3.10" 
 ```
 ---
 
 ### `command`
 The actual workload to run on the TPU VM (inside the container).
 
-- **`cmd`**: A shell script block that orchestrates your run. In your example, it:
-  1. Resets `/home/zephyr/maxtext`.
-  2. Copies project code from the mounted GCS bucket into local disk (faster local I/O).
-  3. Creates a `logs` dir.
-  4. Sets `gcloud` project and zone (keeps CLI aligned with the TPU location).
-  5. Exports `TPU_PREFIX` (TPU resource name) and `BUCKET_NAME` for downstream scripts.
-  6. Runs `pretrain/llama3_8b_L200_1e-4.sh` to launch training.  
-     *(Commented)* Shows how you might run lm-eval afterward.
+- **`cmd`**: A shell script block that orchestrates your run.
 - **`workers`**: Which hosts run the command.  
   - `[0]`: only the first host (controller).  
   - `"all"`: run on all hosts (for symmetric multi-host jobs).  
-  - `[0,1,…]`: explicit list if needed.
+  - `[0,1,...]`: explicit list if needed.
 
 e.g.
 ```yml
@@ -283,7 +271,7 @@ command:
 
 ### Minimal Checklist Before You Run
 - Bucket exists and is in the **same region** as your TPU (e.g., `us-central2`).
-- SSH keys are valid; `config_entry` patterns are correct.
+**[Sep 7 Update]** Now we have an [automatic checker](https://github.com/Zephyr271828/jobman/blob/jobman-exp/jobman/jobman.py#L76) that checks the region of the bucket and the zone of the TPU VM match.
 
 ## Commands Mannual
 Below are the most common cli commands you may find useful in jobman.
