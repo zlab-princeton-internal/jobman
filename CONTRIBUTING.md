@@ -53,15 +53,21 @@ Lastly, all other modules of Job are abstracted as `MultiWorkerRunner`, which su
 
 With those assumptions, Jobman uses highly modular implementation of the modules. All parallel execution logics are at `jobman/runner.py`, and the sub-classes only need to provide `_get_check_steps` and `_get_setup_steps`. For example:
 ```python
-# jobman/envs/conda.py
+install_cmd = """
+sudo usermod -aG docker $USER && sudo systemctl restart docker
+newgrp docker <<EONG
+docker pull {image}
+EONG
+"""
 def _get_check_steps(self, i):
-    yield self._ssh(i, check_cmd.format(env_name=self.env_name))
-    
+    yield self._ssh(i, f"docker image inspect {self.image}") 
+    # check if the docker image exists
+
 def _get_setup_steps(self, i):
-    yield self._scp(i, self.config_file, self.remote_config_file)
-    yield self._ssh(i, install_cmd.format(env_name=self.env_name, remote_config_file=self.remote_config_file))
+    yield self._ssh(i, install_cmd.format(image=self.image))  
+    # ssh to remote hosts and pull the docker image
 ```
-Note `yield` is used because runner execute one step at a time, and exits immediately once a step fails.
+Note `yield` is used because the runner executes one step at a time, and exits immediately once a step fails.
 
 ## Development Roadmap
 - [x] add profiler for account storage
