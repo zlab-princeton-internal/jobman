@@ -269,10 +269,6 @@ command:
 ```
 ---
 
-### Minimal Checklist Before You Run
-- Bucket exists and is in the **same region** as your TPU (e.g., `us-central2`).
-**[Sep 7 Update]** Now we have an [automatic checker](https://github.com/Zephyr271828/jobman/blob/jobman-exp/jobman/jobman.py#L76) that checks the region of the bucket and the zone of the TPU VM match.
-
 ## Commands Mannual
 Below are the most common cli commands you may find useful in jobman.
 
