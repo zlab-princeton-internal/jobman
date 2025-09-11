@@ -1,6 +1,7 @@
 # jobman/cli.py
 import os
 import click
+import subprocess
 from pathlib import Path
 from omegaconf import OmegaConf
 
@@ -90,6 +91,18 @@ def storage():
     """Run storage usage profiler."""
     run_storage_report()
     
+@cli.command(name="ssh")
+@click.argument("job_id")
+def ssh(job_id):
+    cfg = get_cfg(job_id)
+    remote_user = cfg.job.remote_user
+    ips = cfg.tpu.get('ips', [])
+    if not ips:
+        raise ValueError(f'Host0 IP for Job {job_id} not found!')
+    host0_ip = next(ip.get("external_ip") for ip in ips if ip.worker == 0)
+    ssh_cmd = ["ssh", f"{remote_user}@{host0_ip}"]
+    subprocess.run(ssh_cmd)
+    
 @cli.command("run")
 @click.argument("job_id")
 @click.option("--cmd-only", is_flag=True, help="Run the main command only")
@@ -103,60 +116,60 @@ def run(job_id, cmd_only):
     else:
         job.run()
 
-@cli.command(name="tpu")
-@click.argument("job_id")
-def tpu(job_id):
-    """Request a TPU for a given job_id."""
-    # 直接调用 tpu.main()，并把参数传进去
-    from jobman.tpu import TPU
-    cfg = get_cfg(job_id)
-    tpu = TPU(cfg)
-    tpu.request()
+# @cli.command(name="tpu")
+# @click.argument("job_id")
+# def tpu(job_id):
+#     """Request a TPU for a given job_id."""
+#     # 直接调用 tpu.main()，并把参数传进去
+#     from jobman.tpu import TPU
+#     cfg = get_cfg(job_id)
+#     tpu = TPU(cfg)
+#     tpu.request()
     
-@cli.command(name="ssh")
-@click.argument("job_id")
-def ssh(job_id):
-    """Request a TPU for a given job_id."""
-    from jobman.ssh import SSH
-    cfg = get_cfg(job_id)
-    ssh = SSH(cfg)
-    ssh.setup()
+# @cli.command(name="ssh")
+# @click.argument("job_id")
+# def ssh(job_id):
+#     """Request a TPU for a given job_id."""
+#     from jobman.ssh import SSH
+#     cfg = get_cfg(job_id)
+#     ssh = SSH(cfg)
+#     ssh.setup()
     
-@cli.command(name="gcsfuse")
-@click.argument("job_id")
-def gcsfuse(job_id):
-    """Request a TPU for a given job_id."""
-    from jobman.gcsfuse import GCSFUSE
-    cfg = get_cfg(job_id)
-    gcsfuse = GCSFUSE(cfg)
-    gcsfuse.setup()
+# @cli.command(name="gcsfuse")
+# @click.argument("job_id")
+# def gcsfuse(job_id):
+#     """Request a TPU for a given job_id."""
+#     from jobman.gcsfuse import GCSFUSE
+#     cfg = get_cfg(job_id)
+#     gcsfuse = GCSFUSE(cfg)
+#     gcsfuse.setup()
     
-@cli.command(name="docker")
-@click.argument("job_id")
-def docker(job_id):
-    """Request a TPU for a given job_id."""
-    from jobman.envs.docker import DOCKER
-    cfg = get_cfg(job_id)
-    logger = setup_logger(log_file=Path(cfg.job.dir)/'logs'/'job.log')
-    docker = DOCKER(cfg, logger)
-    docker.setup()
+# @cli.command(name="docker")
+# @click.argument("job_id")
+# def docker(job_id):
+#     """Request a TPU for a given job_id."""
+#     from jobman.envs.docker import DOCKER
+#     cfg = get_cfg(job_id)
+#     logger = setup_logger(log_file=Path(cfg.job.dir)/'logs'/'job.log')
+#     docker = DOCKER(cfg, logger)
+#     docker.setup()
   
-@cli.command(name="conda")
-@click.argument("job_id")
-def conda(job_id):
-    """Request a TPU for a given job_id."""
-    from jobman.envs.conda import CONDA
-    cfg = get_cfg(job_id)
-    logger = setup_logger(log_file=Path(cfg.job.dir)/'logs'/'job.log')
-    conda = CONDA(cfg, logger)
-    conda.setup()  
+# @cli.command(name="conda")
+# @click.argument("job_id")
+# def conda(job_id):
+#     """Request a TPU for a given job_id."""
+#     from jobman.envs.conda import CONDA
+#     cfg = get_cfg(job_id)
+#     logger = setup_logger(log_file=Path(cfg.job.dir)/'logs'/'job.log')
+#     conda = CONDA(cfg, logger)
+#     conda.setup()  
 
-@cli.command(name="venv")
-@click.argument("job_id")
-def venv(job_id):
-    """Request a TPU for a given job_id."""
-    from jobman.envs.venv import VENV
-    cfg = get_cfg(job_id)
-    logger = setup_logger(log_file=Path(cfg.job.dir)/'logs'/'job.log')
-    venv = VENV(cfg, logger)
-    venv.setup()  
+# @cli.command(name="venv")
+# @click.argument("job_id")
+# def venv(job_id):
+#     """Request a TPU for a given job_id."""
+#     from jobman.envs.venv import VENV
+#     cfg = get_cfg(job_id)
+#     logger = setup_logger(log_file=Path(cfg.job.dir)/'logs'/'job.log')
+#     venv = VENV(cfg, logger)
+#     venv.setup()  

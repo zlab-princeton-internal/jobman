@@ -28,7 +28,7 @@ class Job:
         self.loop = cfg.job.get('loop', False)
        
         self.logger = setup_logger(log_file=Path(self.dir) / 'logs' / 'job.log')
-        self.tpu = TPU(cfg, self.logger)
+        self.tpu = TPU(cfg)
         self.ssh = SSH(cfg, self.logger) if getattr(cfg, "ssh", None) is not None else None
         self.gcsfuse = GCSFUSE(cfg, self.logger) if getattr(cfg, "gcsfuse", None) is not None else None
         self.command = COMMAND(cfg, self.logger) if getattr(cfg, "command", None) is not None else None
@@ -56,8 +56,8 @@ class Job:
                 self.logger.error("TPU allocation failed.")
                 return False
         
-        self.cfg.tpu.ips = self.tpu.get_ips()
-        OmegaConf.save(self.cfg, Path(self.dir) / "config.yaml")
+            self.cfg.tpu.ips = self.tpu.get_ips()
+            OmegaConf.save(self.cfg, Path(self.dir) / "config.yaml")
         return True
 
     def setup(self):

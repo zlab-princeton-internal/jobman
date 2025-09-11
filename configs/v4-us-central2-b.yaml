@@ -6,7 +6,7 @@ job:
 
 tpu:
   allocation_mode: "queued-resources"    # tpu-vm | queued-resources
-  accelerator: v4-256
+  accelerator: v4-8
   name: yufeng-${tpu.accelerator}
   zone: us-central2-b
   version: tpu-ubuntu2204-base
@@ -71,6 +71,12 @@ command:
 
     cd maxtext && git config pull.rebase false && git pull origin v6e || (git clone -b v6e https://github.com/Zephyr271828/maxtext.git && cd maxtext)
 
-    bash pretrain/llama3_8b_L200_1e-4.sh
+    git submodule update --init --recursive
+
+    # bash scripts/llama3.1_4b_width_S50_3e-4_warmup_0.05.sh
+
+    # cd lm-evaluation-harness
+
+    # bash scripts/test_orabx_eval.sh
 
   workers: [0] # int | list | "all"

@@ -10,7 +10,7 @@ from jobman.utils import setup_logger
 
 class TPU:
     
-    def __init__(self, cfg, logger):
+    def __init__(self, cfg, logger=None):
         self.name = cfg.tpu.name
         self.zone = cfg.tpu.zone
         self.accelerator = cfg.tpu.accelerator
