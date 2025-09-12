@@ -182,6 +182,8 @@ Prepares SSH keys and host configs on the TPU VM(s).
   - Ensures multi-host jobs can SSH among nodes; also avoids manual `ssh-add`.
   - identities is also optional.
 
+IMPORTANT: all `private_key` and `public_key` are local paths on your local machine. They will be scp'ed to the TPU VM and named as `~/.ssh/<file_name>`. Therefore in the `config_entry` you should write the remote_path instead.
+
 e.g.
 ```yml
 ssh:
