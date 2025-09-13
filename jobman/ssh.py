@@ -34,7 +34,7 @@ class SSH(MultiWorkerRunner):
                 yield 1; continue
             
             yield self._scp(i, str(pri), f"~/.ssh")
-            yield self._scp(i, str(pri), f"~/.ssh")
+            yield self._scp(i, str(pub), f"~/.ssh")
             yield self._ssh(i, f"chmod 600 ~/.ssh/{pri.name} && chmod 644 ~/.ssh/{pub.name}")
             
             combined_config += config_entry + "\n\n"
