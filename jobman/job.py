@@ -89,7 +89,7 @@ class Job:
                 self.logger.exception(f"Job failed with error: {e}")
             
             if not self.loop:
-                return False
+                break
             self.logger.info("Retrying job due to error...")
             
         self.logger.info(f"Job {self.id} finished successfully.")

@@ -121,8 +121,8 @@ class TPU:
         self.logger.info("Queued resource submitted. Polling until READY...")
         return self.wait_tpu_vm_until_ready()
     
-    def wait_tpu_vm_until_ready(self, poll_interval=30):
-        while True:
+    def wait_tpu_vm_until_ready(self, poll_interval=30, max_wait=900):
+        for i in range(max_wait // poll_interval):
             status = self._check_tpu_vm_status()
             self.logger.info(f"Current status: {status}")
             if status in {"READY", "ACTIVE"}:
@@ -132,11 +132,13 @@ class TPU:
                 self.logger.error(f"TPU failed or disappeared: {status}")
                 return False
             elif status in {"NOT FOUND"}:
-                queue_status =  self._check_queued_resource_status() 
-                if queue_status in {"FAILED", "SUSPENDED", "NOT FOUND"}:
+                queue_status = self._check_queued_resource_status() 
+                print(queue_status)
+                if queue_status in {"FAILED", "SUSPENDED", "NOT FOUND", "UNKNOWN"}:
                     self.logger.error(f"Queued Resources failed: {queue_status}")
                     return False
             time.sleep(poll_interval)
+        return False
     
     def get_ips(self):
         """Get internal and external IPs of all TPU workers."""
