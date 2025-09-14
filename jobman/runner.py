@@ -39,7 +39,10 @@ class MultiWorkerRunner:
         
         private_key = getattr(self.cfg, "ssh", {}).get("private_key", None)
         if private_key:
-            cmd.append(f"--ssh-flag=-i {str(Path(private_key).expanduser())}")
+            key_path = str(Path(private_key).expanduser())
+            # Pass "-i" and the identity path as separate ssh flags so gcloud
+            # forwards them as separate argv tokens to ssh/scp.
+            cmd.extend(["--ssh-flag=-i", f"--ssh-flag={key_path}"])
         if os.environ.get("JOBMAN_DEBUG", "").lower() in ("1", "true", "yes", "on"):
             self.logger.debug(' '.join(cmd))
         with open(logf, "a") as f:
@@ -57,7 +60,8 @@ class MultiWorkerRunner:
         ]
         private_key = getattr(self.cfg, "ssh", {}).get("private_key", None)
         if private_key:
-            cmd.append(f"--scp-flag=-i {str(Path(private_key).expanduser())}")
+            key_path = str(Path(private_key).expanduser())
+            cmd.extend(["--scp-flag=-i", f"--scp-flag={key_path}"])
         
         if os.environ.get("JOBMAN_DEBUG", "").lower() in ("1", "true", "yes", "on"):
             self.logger.debug(' '.join(cmd))
