@@ -69,7 +69,7 @@ command:
 
     cd /home/zephyr/
 
-    cd maxtext &&  git config pull.rebase false && git pull origin v6e || (git clone -b v6e https://github.com/Zephyr271828/maxtext.git && cd maxtext)
+    cd maxtext &&  git config pull.rebase false && git pull origin test || (git clone -b test https://github.com/Zephyr271828/maxtext.git && cd maxtext)
 
     bash scripts/llama3.1_4b_width_S50.sh
 
