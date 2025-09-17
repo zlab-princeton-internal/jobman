@@ -121,7 +121,7 @@ class TPU:
         self.logger.info("Queued resource submitted. Polling until READY...")
         return self.wait_tpu_vm_until_ready()
     
-    def wait_tpu_vm_until_ready(self, poll_interval=30, max_wait=900):
+    def wait_tpu_vm_until_ready(self, poll_interval=30, max_wait=9000):
         for i in range(max_wait // poll_interval):
             status = self._check_tpu_vm_status()
             self.logger.info(f"Current status: {status}")

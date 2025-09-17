@@ -56,6 +56,14 @@ def stop(job_id):
     jm = JobMan()
     jm.stop_job(job_id)
     
+@cli.command(name="reboot")
+@click.argument("job_id", type=str)
+def reboot(job_id):
+    """Cancel a running job."""
+    jm = JobMan()
+    jm.stop_job(job_id)
+    jm.start_job(job_id)
+    
 @cli.command(name="delete")
 @click.argument("job_id", type=str)
 def delete(job_id):

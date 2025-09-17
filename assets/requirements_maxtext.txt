@@ -181,6 +181,7 @@ regex==2025.7.34
 requests==2.32.4
 requests-oauthlib==2.0.0
 rich==14.1.0
+rouge-score==0.1.2
 rsa==4.9.1
 sacrebleu==2.5.1
 safetensors==0.5.3

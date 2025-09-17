@@ -302,17 +302,19 @@ Below are the most common cli commands you may find useful in jobman.
 ### Debugging Commands
 | Purpose | Command |
 |:--:|:--:|
-| Request TPU for job id | `jobman tpu <job_id>` |
+| ssh to host0 for job id | `jobman ssh <job_id>` |
+| stop your job and restart | `jobman reboot <job_id>` |
+<!-- | Request TPU for job id | `jobman tpu <job_id>` |
 | Set up ssh for job id | `jobman ssh <job_id>` |
 | Set up gcsfuse for job id | `jobman gcsfuse <job_id>` |
 | Set up docker for job id | `jobman docker <job_id>` |
 | Set up conda for job id | `jobman conda <job_id>` |
 | Set up venv for job id | `jobman venv <job_id>` |
-| Run command only for job id | `jobman run <job_id> --cmd-only` |
+| Run command only for job id | `jobman run <job_id> --cmd-only` | -->
 
 ### Profiling Commands
 | Purpose | Command |
 |:--:|:--:|
 | List sizes of buckets | `jobman storage` |
 | List cores and ips quotas | `jobman quota` |
-| List daily billings | `jobman billing` |
+<!-- | List daily billings | `jobman billing` | -->
