@@ -6,7 +6,7 @@ job:
 
 tpu:
   allocation_mode: "queued-resources"    # tpu-vm | queued-resources
-  accelerator: v4-128
+  accelerator: v4-64
   name: yufeng-${tpu.accelerator}
   zone: us-central2-b
   version: tpu-ubuntu2204-base

@@ -38,25 +38,28 @@ class TPU:
             result = self._run_command([
                 "gcloud", "alpha", "compute", "tpus", "tpu-vm", "describe",
                 self.name, "--zone", self.zone, "--format=value(state)"
-            ]).stdout.strip()
-            return result or "NOT FOUND"
+            ]).stdout
+            if not result:
+                return "NOT FOUND"
+            return result.strip()
         except Exception as e:
             self.logger.error(f"Error checking TPU VM status: {e}")
-            return "UNKNOWN"
+            return "NOT FOUND"
     
     def _check_queued_resource_status(self):
         try:
             result = self._run_command([
                 "gcloud", "compute", "tpus", "queued-resources", "describe",
                 self.name, "--zone", self.zone, "--format=value(state)"
-            ]).stdout.strip()
-            result = result.replace("state=", "")
-            return result if result else "NOT FOUND"
+            ]).stdout
+            if not result:
+                return "NOT FOUND"
+            return result.replace("state=", "")
         except Exception as e:
             self.logger.error(f"Error checking queued TPU status: {e}")
-            return "UNKNOWN"
+            return "NOT FOUND"
         
-    def check_and_maybe_delete(self):
+    def _check_and_maybe_delete(self):
         assert self.mode in {"tpu-vm", "queued-resources"}
         status = self._check_tpu_vm_status()
         if status in {"READY", "ACTIVE"}:
@@ -121,7 +124,7 @@ class TPU:
         self.logger.info("Queued resource submitted. Polling until READY...")
         return self.wait_tpu_vm_until_ready()
     
-    def wait_tpu_vm_until_ready(self, poll_interval=30, max_wait=9000):
+    def wait_tpu_vm_until_ready(self, poll_interval=30, max_wait=12000):
         for i in range(max_wait // poll_interval):
             status = self._check_tpu_vm_status()
             self.logger.info(f"Current status: {status}")

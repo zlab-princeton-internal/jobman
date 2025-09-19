@@ -47,7 +47,7 @@ class Job:
 
     def request(self):
         self.logger.info("Checking TPU status...")
-        ready = self.tpu.check_and_maybe_delete()
+        ready = self.tpu._check_and_maybe_delete()
         
         if not ready:
             self.logger.info("Requesting TPU...")

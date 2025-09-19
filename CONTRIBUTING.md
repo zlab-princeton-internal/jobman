@@ -76,6 +76,10 @@ Note `yield` is used because the runner executes one step at a time, and exits i
 - [ ] add an email notifier of job status
 - [x] add user separation
 - [ ] add a complete set of unit tests. 
+added: conda, docker, gcsfuse, ssh, venv
+- [ ] simplify tpu implementation. 
+- [ ] a `sinfo`-like command to check details of a job.
+- [ ] (Optional) consider about restructuring of this tool, like relying on some existing orchestration systems.
 
 ## Contribution Guidelines
 Here is a simple guideline to contribute to Jobman.
