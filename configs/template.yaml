@@ -54,3 +54,8 @@ command:
   cmd: |
     pip show jax
   workers: [0] # int | list | "all"
+
+brevo_email:
+  api_key: null
+  sender: null
+  receiver: null

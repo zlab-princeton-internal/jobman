@@ -30,3 +30,34 @@ def setup_logger(name: str = 'job', log_file: Path = None, level=logging.DEBUG, 
         logger.addHandler(file_handler)
         
     return logger
+
+import sib_api_v3_sdk
+from sib_api_v3_sdk.rest import ApiException
+from sib_api_v3_sdk import  ApiClient, Configuration, TransactionalEmailsApi, SendSmtpEmail
+from pprint import pprint
+
+def send_notification(msg, config, title="Jobman Notification"):
+    configuration = sib_api_v3_sdk.Configuration()
+    sender = config.get('brevo_email', {}).get('sender', None)
+    receiver = config.get('brevo_email', {}).get('receiver', None)
+    configuration.api_key['api-key'] = config.get('brevo_email', {}).get('api_key', None)
+    
+    if not sender or not receiver or not configuration.api_key['api-key']:
+        return
+
+    api_client = sib_api_v3_sdk.ApiClient(configuration)
+
+    api_instance = TransactionalEmailsApi(ApiClient(configuration))
+    send_email = SendSmtpEmail(
+        to=[{"email": receiver, "name": "Jobman User"}],
+        sender={"email": sender, "name": "Jobman Bot"},
+        subject=title,
+        text_content="All jobs completed successfully. ✅"
+    )
+
+    try:
+        api_response = api_instance.send_transac_email(send_email)
+        print("✅ Campaign created successfully:")
+        pprint(api_response)
+    except ApiException as e:
+        print("❌ Exception when calling EmailCampaignsApi->create_email_campaign:\n%s" % e)

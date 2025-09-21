@@ -14,7 +14,7 @@ from jobman.envs.conda import CONDA
 from jobman.envs.venv import VENV
 from jobman.command import COMMAND
 
-from jobman.utils import setup_logger
+from jobman.utils import setup_logger, send_notification
 
 class Job:
     
@@ -58,6 +58,8 @@ class Job:
         
             self.cfg.tpu.ips = self.tpu.get_ips()
             OmegaConf.save(self.cfg, Path(self.dir) / "config.yaml")
+            
+            send_notification(f"TPU Resources {self.config.tpu.name} has been allocated", self.config)
         return True
 
     def setup(self):

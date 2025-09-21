@@ -8,6 +8,7 @@ Jobman-v2 is a modular and extensible job management system for TPU VMs.
 
 ## News
 
+- **2025-09-21**: Now you can configure to make jobman send you emails when tpu resources are allocated. See [here](jobman/utils.py).
 - **2025-09-08**: I discovered [tpu-pod-commander](https://github.com/young-geng/tpu_pod_commander) by Young Geng at Deepmind, which has very similar functions as Jobman but is much simpler in design. Jobman aims to settle down everything for the user but can be hard to understand or debug, whereas tpu-pod-commander is much more native to the generic TPU interfaces. Feel free to switch to tpu-pod-commander if you prefer its design.
 - **2025-09-06**: Added an [automatic checker](https://github.com/Zephyr271828/jobman/blob/jobman-exp/jobman/jobman.py#L76) to verify the bucket region and the TPU VM zone match, so that you can ensure your storage costs are minimized.
 - **2025-08-28**: Added support for conda and venv as well as [unit tests](tests).

@@ -17,6 +17,7 @@ dependencies = [
     "hydra-core", 
     "omegaconf", 
     "pydantic",
+    "sib-api-v3-sdk",
     "streamlit",
     "tabulate", 
     "tqdm", 
