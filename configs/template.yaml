@@ -46,8 +46,8 @@ conda:
   config_file: assets/fms.yaml
 
 venv:
-  name: maxtext
-  requirements_file: assets/requirements.txt  
+  name: maxtext_env
+  requirements_file: assets/requirements_maxtext.txt  
   python: "python3.9"  
 
 command:
@@ -59,13 +59,11 @@ command:
 
     gcloud config set compute/zone ${tpu.zone}
 
-
-    gcloud compute os-login ssh-keys add --key-file ~/.ssh/google_compute_engine.pub
-    gcloud compute os-login ssh-keys list
-
     cd /home/zephyr/
 
     cd maxtext && git config pull.rebase false && git pull origin test || (git clone -b test https://github.com/Zephyr271828/maxtext.git && cd maxtext)
+
+    cd /home/zephyr/maxtext
 
     git submodule update --init --recursive
 

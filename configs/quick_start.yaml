@@ -1,6 +1,6 @@
 job:
   name: quick-start
-  env_type: conda
+  env_type: venv
   loop: False
 
 tpu:
@@ -22,9 +22,10 @@ gcsfuse: null
 
 ssh: null
 
-conda:
-  name: fms
-  config_file: assets/fms.yaml
+venv:
+  name: maxtext_env
+  requirements_file: assets/requirements_maxtext.txt  
+  python: "python3.9"  
 
 command:
   cmd: |
