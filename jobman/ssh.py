@@ -4,12 +4,12 @@ from pathlib import Path
 from textwrap import dedent
 from jobman.runner import MultiWorkerRunner
 
-setup_cmd = """
-echo "[INFO] Generating google_compute_engine key..."
-ssh-keygen -t rsa -f ~/.ssh/google_compute_engine -C "$USER" -N ""
-EMAIL=$(gcloud config get-value account)
-gcloud compute os-login ssh-keys add --key-file ~/.ssh/google_compute_engine.pub --ttl=0
-"""
+# setup_cmd = """
+# echo "[INFO] Generating google_compute_engine key..."
+# ssh-keygen -t rsa -f ~/.ssh/google_compute_engine -C "$USER" -N ""
+# EMAIL=$(gcloud config get-value account)
+# gcloud compute os-login ssh-keys add --key-file ~/.ssh/google_compute_engine.pub --ttl=0
+# """
 
 class SSH(MultiWorkerRunner):
     
@@ -49,4 +49,4 @@ class SSH(MultiWorkerRunner):
         escaped_config = combined_config.strip().replace('"', '\\"').replace('\n', '\\n')
         yield self._ssh(i, f"printf '{escaped_config}\\n' > ~/.ssh/config")
         yield self._ssh(i, 'chmod 600 ~/.ssh/config')    
-        yield self._ssh(i, setup_cmd)
+        # yield self._ssh(i, setup_cmd)
