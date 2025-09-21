@@ -1,3 +1,4 @@
+import os
 import sys
 import logging
 from pathlib import Path
@@ -37,6 +38,9 @@ from sib_api_v3_sdk import  ApiClient, Configuration, TransactionalEmailsApi, Se
 from pprint import pprint
 
 def send_notification(msg, config, title="Jobman Notification"):
+    if os.environ.get("DISABLE_EMAIL", "").lower() in ("1", "true", "yes", "on"):
+        return
+    
     configuration = sib_api_v3_sdk.Configuration()
     sender = config.get('brevo_email', {}).get('sender', None)
     receiver = config.get('brevo_email', {}).get('receiver', None)
@@ -52,7 +56,7 @@ def send_notification(msg, config, title="Jobman Notification"):
         to=[{"email": receiver, "name": "Jobman User"}],
         sender={"email": sender, "name": "Jobman Bot"},
         subject=title,
-        text_content="All jobs completed successfully. ✅"
+        text_content=msg,
     )
 
     try:

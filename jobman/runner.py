@@ -10,7 +10,7 @@ class MultiWorkerRunner:
         self.cfg = cfg
         self.logger = logger
         self.action = action
-        self.workers = list(range(self.cfg.tpu.num_workers))
+        # self.workers = list(range(self.cfg.tpu.num_workers))
 
     def _per_worker_log(self, i): 
         return Path(self.cfg.job.dir)/"logs"/f"{self.action}_worker_{i}.log"
@@ -21,7 +21,7 @@ class MultiWorkerRunner:
     def _get_setup_steps(self, i): 
         yield 0
 
-    def _ssh(self, i:int, script:str) -> int:
+    def _ssh(self, i, script:str) -> int:
         logf = self._per_worker_log(i)
         
         cmd = [
@@ -48,7 +48,7 @@ class MultiWorkerRunner:
         with open(logf, "a") as f:
             return subprocess.run(cmd, stdout=f, stderr=f).returncode
         
-    def _scp(self, i: int, local_path: str, remote_path: str, recursive: bool = False) -> int:
+    def _scp(self, i, local_path: str, remote_path: str, recursive: bool = False) -> int:
         logf = self._per_worker_log(i)
         cmd = [
             "gcloud", "alpha", "compute", "tpus", "tpu-vm", "scp",
@@ -70,18 +70,18 @@ class MultiWorkerRunner:
         with open(logf, "a") as f:
             return subprocess.run(cmd, stdout=f, stderr=f).returncode
 
-    def _check_worker(self, i: int) -> bool:
+    def _check_worker(self, i) -> bool:
         self.logger.info(f"{self.action} worker {i}: checking...")
         return all(rc == 0 for rc in self._get_check_steps(i))
 
-    def _setup_worker(self, i: int) -> bool:
+    def _setup_worker(self, i) -> bool:
         self.logger.info(f"{self.action} worker {i}: running setup...")
         ok = all(rc == 0 for rc in self._get_setup_steps(i))
         if not ok:
             self.logger.error(f"{self.action} worker {i}: setup failed (some step non-zero).")
         return ok
 
-    def _setup_one(self, i: int) -> bool:
+    def _setup_one(self, i) -> bool:
         try:
             if self._check_worker(i):
                 self.logger.info(f"{self.action} worker {i}: already set up, skip.")
@@ -91,18 +91,27 @@ class MultiWorkerRunner:
             self.logger.exception(f"{self.action} worker {i}: exception: {e}")
             return False
 
-    def setup(self) -> bool:
-        self.logger.info(f"setting up {self.action} on {len(self.workers)} workers in parallel...")
-        all_ok = True
-        with concurrent.futures.ThreadPoolExecutor(max_workers=len(self.workers)) as ex:
-            futures = {ex.submit(self._setup_one, i): i for i in self.workers}
-            for fut in concurrent.futures.as_completed(futures):
-                i = futures[fut]
-                try:
-                    all_ok &= fut.result()
-                except Exception as e:
-                    self.logger.exception(f"{self.action} worker {i}: future exception: {e}")
-                    all_ok = False
+    def setup(self, workers=None) -> bool:
+        if workers is not None:
+            self.logger.info(f"setting up {self.action} on {len(workers)} workers in parallel...")
+            all_ok = True
+            with concurrent.futures.ThreadPoolExecutor(max_workers=len(workers)) as ex:
+                futures = {ex.submit(self._setup_one, i): i for i in workers}
+                for fut in concurrent.futures.as_completed(futures):
+                    i = futures[fut]
+                    try:
+                        all_ok &= fut.result()
+                    except Exception as e:
+                        self.logger.exception(f"{self.action} worker {i}: future exception: {e}")
+                        all_ok = False
+        else:
+            self.logger.info(f"setting up {self.action} on all workers in parallel...")
+            try:
+                all_ok = self._setup_one("all")
+            except Exception as e:
+                self.logger.exception(f"{self.action} failed on at least 1 worker")
+                all_ok = False
+    
         if all_ok:
             self.logger.info(f"{self.action} setup completed successfully on all workers.")
         else:

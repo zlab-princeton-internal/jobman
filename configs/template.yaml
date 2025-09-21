@@ -52,7 +52,24 @@ venv:
 
 command:
   cmd: |
-    pip show jax
+    
+    export BUCKET_NAME=${gcsfuse.bucket_name}
+
+    gcloud config set project vision-mix
+
+    gcloud config set compute/zone ${tpu.zone}
+
+
+    gcloud compute os-login ssh-keys add --key-file ~/.ssh/google_compute_engine.pub
+    gcloud compute os-login ssh-keys list
+
+    cd /home/zephyr/
+
+    cd maxtext && git config pull.rebase false && git pull origin test || (git clone -b test https://github.com/Zephyr271828/maxtext.git && cd maxtext)
+
+    git submodule update --init --recursive
+
+    # bash scripts/llama3.1_4b_width_S50_3e-4_warmup_0.05.sh
   workers: [0] # int | list | "all"
 
 brevo_email:

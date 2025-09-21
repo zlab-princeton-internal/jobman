@@ -59,7 +59,7 @@ class Job:
             self.cfg.tpu.ips = self.tpu.get_ips()
             OmegaConf.save(self.cfg, Path(self.dir) / "config.yaml")
             
-            send_notification(f"TPU Resources {self.config.tpu.name} has been allocated", self.config)
+            send_notification(f"TPU Resources {self.cfg.tpu.name} has been allocated", self.cfg)
         return True
 
     def setup(self):
@@ -70,7 +70,8 @@ class Job:
     
     def execute(self):
         self.command.full_cmd = self.env.patch_command(self.command.base_cmd) if self.env else self.command.base_cmd
-        return self.command.setup()
+        send_notification(f"Job {self.cfg.job.name} main command started", self.cfg)
+        return self.command.setup(self.command.workers)
     
     def run(self):
         while True:
@@ -94,4 +95,5 @@ class Job:
                 break
             self.logger.info("Retrying job due to error...")
             
+        send_notification(f"Job {self.cfg.job.name} finished successfully", self.cfg)
         self.logger.info(f"Job {self.id} finished successfully.")
