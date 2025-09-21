@@ -318,3 +318,17 @@ Below are the most common cli commands you may find useful in jobman.
 | List sizes of buckets | `jobman storage` |
 | List cores and ips quotas | `jobman quota` |
 <!-- | List daily billings | `jobman billing` | -->
+
+## Email Notification
+This is an advanced function in JobMan, and you need to configure brevo, a free email sending api by yourself. Specifically, you need to do 3 things:
+1. sign up for Brevo
+2. get a Brevo API key like the following:
+![](figs/brevo.png)
+3. add brevo entries to your config:
+```yaml
+brevo_email:
+  api_key: <your api key>
+  sender: <the email address you used to sign up for brevo>
+  receiver: <the email address you want to notify>
+```
+Note that the free limit of brevo is **300 emails per day**. Try not to blow up that limit.
