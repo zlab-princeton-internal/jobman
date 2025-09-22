@@ -30,17 +30,17 @@ class COMMAND(MultiWorkerRunner):
             seen = set()
             for w in worker_spec:
                 if not isinstance(w, int) or not (0 <= w < num_workers):
-                    log(f"Invalid worker index in list: {w}. Only {num_workers} workers available.", "ERROR")
+                    self.logger.error(f"Invalid worker index in list: {w}. Only {num_workers} workers available.")
                     return []
                 if w in seen:
-                    log(f"Duplicate worker index specified: {w}.", "ERROR")
+                    self.logger.error(f"Duplicate worker index specified: {w}.")
                     return []
                 seen.add(w)
                 workers.append(w)
             return workers
 
         else:
-            log(f"Invalid type for 'worker': {type(worker_spec)}. Must be 'all', int, or list of int.", "ERROR")
+            self.logger.error(f"Invalid type for 'worker': {type(worker_spec)}. Must be 'all', int, or list of int")
             return []
         
     def _get_setup_steps(self, i):

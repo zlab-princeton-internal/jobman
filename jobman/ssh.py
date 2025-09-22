@@ -31,7 +31,7 @@ class SSH(MultiWorkerRunner):
             yield 0; return
         
         combined_config = ""
-        yield self._ssh(0, "mkdir -p ~/.ssh && chmod 700 ~/.ssh")
+        yield self._ssh(i, "mkdir -p ~/.ssh && chmod 700 ~/.ssh")
         for entry in self.identities:
             pri = Path(entry.private_key).expanduser()
             pub = Path(entry.public_key).expanduser()
