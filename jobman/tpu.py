@@ -57,28 +57,15 @@ class TPU:
             return result.replace("state=", "")
         except Exception as e:
             self.logger.error(f"Error checking queued TPU status: {e}")
-            return "NOT FOUND"
+            return "ERROR"
         
     def _check_and_maybe_delete(self):
         assert self.mode in {"tpu-vm", "queued-resources"}
-        status = self._check_tpu_vm_status()
-        if status in {"READY", "ACTIVE"}:
+        if self.wait_tpu_vm_until_ready():
+            self.logger.info("TPU is ready, no need to delete.")
             return True
-        elif status in {"PREEMPTED", "TERMINATED", "STOPPED", "SUSPENDED"}:
-            self.logger.warning(f"TPU is in unrecoverable state: {status}. Deleting...")
-            self.delete()
-        elif status in {"CREATING", "PROVISIONING"}:
-            self.logger.info("TPU is currently provisioning. Waiting until it becomes ready...")
-            if self.wait_tpu_vm_until_ready():
-                return True
-            else:
-                self.logger.warning("TPU failed to become ready. Deleting...")
-                self.delete()
-        elif status in {"NOT FOUND"}:
-            self.delete()
-        else:
-            self.logger.error(f"Unexpected TPU status: {status}. Deleting as precaution.")
-            self.delete()
+        self.logger.info("TPU is not ready, deleting and retrying...")
+        self.delete()
         return False
         
     def request(self):
@@ -126,18 +113,18 @@ class TPU:
     
     def wait_tpu_vm_until_ready(self, poll_interval=30, max_wait=900):
         for i in range(max_wait // poll_interval):
-            status = self._check_tpu_vm_status()
-            self.logger.info(f"Current status: {status}")
-            if status in {"READY", "ACTIVE"}:
+            vm_status = self._check_tpu_vm_status()
+            self.logger.info(f"VM status: {vm_status}")
+            if vm_status in {"READY", "ACTIVE"}:
                 self.logger.info("TPU is READY!")
                 return True
-            elif status in {"FAILED", "DELETING", "UNSPECIFIED"}:
-                self.logger.error(f"TPU failed or disappeared: {status}")
+            elif vm_status in {"FAILED", "DELETING", "UNSPECIFIED"}:
+                self.logger.error(f"TPU failed or disappeared: {vm_status}")
                 return False
-            elif status in {"NOT FOUND"}:
+            elif vm_status in {"NOT FOUND"}:
                 queue_status = self._check_queued_resource_status() 
-                print(queue_status)
-                if queue_status in {"FAILED", "SUSPENDED"}:
+                self.logger.info(f"Queue status: {queue_status}")
+                if any(status in queue_status for status in ["FAILED", "SUSPENDED", "ERROR", "NOT FOUND"]):
                     self.logger.error(f"Queued Resources failed: {queue_status}")
                     return False
             time.sleep(poll_interval)
@@ -173,47 +160,30 @@ class TPU:
             return []
     
     def delete(self):
-        self.logger.info(f"Checking status of TPU VM {self.name} in zone {self.zone}...")
+        self.logger.info(f"Deleting VM {self.name} in zone {self.zone}...")
+        cmd = [
+            "gcloud", "alpha", "compute", "tpus", "tpu-vm", "delete",
+            self.name, "--zone", self.zone, "--quiet"
+        ]
         try:
-            vm_status = self._check_tpu_vm_status()
+            self.logger.debug(f"Running command: {' '.join(cmd)}")
+            self._run_command(cmd)
+            self.logger.info("TPU VM deleted successfully.")
         except:
-            vm_status = "NOT FOUND"
-        if vm_status != "NOT FOUND":
-            self.logger.info(f"Deleting TPU VM {self.name} in zone {self.zone}...")
-            cmd = [
-                "gcloud", "alpha", "compute", "tpus", "tpu-vm", "delete",
-                self.name, "--zone", self.zone, "--quiet"
-            ]
-            try:
-                self.logger.debug(f"Running command: {' '.join(cmd)}")
-                self._run_command(cmd)
-                self.logger.info("TPU VM deleted successfully.")
-            except:
-                self.logger.info("No TPU VM to delete or deletion failed (possibly already gone).")
-        else:
-            self.logger.info("TPU VM not found. Skipping deletion.")
+            self.logger.info("No TPU VM to delete or deletion failed (possibly already gone).")
             
         if self.mode == 'tpu-vm':
             return
             
         self.logger.info(f"Checking status of Queued Resources {self.name} in zone {self.zone}...")
-        try:
-            queue_status = self._check_queued_resource_status()
+        cmd = [
+            "gcloud", "compute", "tpus", "queued-resources", "delete",
+            self.name, "--zone", self.zone, "--quiet"
+        ]
+        try: 
+            self.logger.debug(f"Running command: {' '.join(cmd)}")
+            self._run_command(cmd)
+            self.logger.info("Queued resources deleted.")
         except:
-            queue_status = "NOT FOUND"
-        if queue_status != "NOT FOUND":
-            self.logger.info(f"Deleting QUEUE {self.name} in zone {self.zone}...")
-            cmd = [
-                "gcloud", "compute", "tpus", "queued-resources", "delete",
-                self.name, "--zone", self.zone, "--quiet"
-            ]
-            try:
-                self.logger.debug(f"Running command: {' '.join(cmd)}")
-                self._run_command(cmd)
-                self.logger.info("Queued resources deleted.")
-            except:
-                self.logger.warning("No Queued resources to delete or deletion failed (possibly already gone).")
-        else:
-            self.logger.info("Queued resources not found. Skipping deletion.")
-            
+            self.logger.warning("No Queued resources to delete or deletion failed (possibly already gone).")
 
