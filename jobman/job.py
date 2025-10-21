@@ -18,7 +18,7 @@ from jobman.utils import setup_logger, send_notification
 
 class Job:
     
-    def __init__(self, cfg):
+    def __init__(self, cfg, name=None):
         
         self.cfg = cfg
        
@@ -31,7 +31,7 @@ class Job:
         self.tpu = TPU(cfg)
         self.ssh = SSH(cfg, self.logger) if getattr(cfg, "ssh", None) is not None else None
         self.gcsfuse = GCSFUSE(cfg, self.logger) if getattr(cfg, "gcsfuse", None) is not None else None
-        self.command = COMMAND(cfg, self.logger) if getattr(cfg, "command", None) is not None else None
+        self.command = COMMAND(cfg, self.logger, name=name) if getattr(cfg, "command", None) is not None else None
         
         self.env_type = getattr(cfg.job, "env_type", None)
         if self.env_type is None:

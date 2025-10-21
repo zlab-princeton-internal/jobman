@@ -44,11 +44,12 @@ def create(config_path):
     
 @cli.command(name="resume")
 @click.argument("job_id", type=str)
-def resume(job_id):
+@click.option("--name", default=None, help="manually set job_name")
+def resume(job_id, name=None):
     """Cancel a running job."""
     jm = JobMan()
-    jm.start_job(job_id)
-    
+    jm.start_job(job_id, name=name)
+
 @cli.command(name="stop")
 @click.argument("job_id", type=str)
 def stop(job_id):
@@ -58,11 +59,12 @@ def stop(job_id):
     
 @cli.command(name="reboot")
 @click.argument("job_id", type=str)
-def reboot(job_id):
+@click.option("--name", default=None, help="manually set job_name")
+def reboot(job_id, name=None):
     """Cancel a running job."""
     jm = JobMan()
     jm.stop_job(job_id)
-    jm.start_job(job_id)
+    jm.start_job(job_id, name=name)
     
 @cli.command(name="delete")
 @click.argument("job_id", type=str)
@@ -117,11 +119,12 @@ def ssh(job_id, i=0):
 @cli.command("run")
 @click.argument("job_id")
 @click.option("--cmd-only", is_flag=True, help="Run the main command only")
-def run(job_id, cmd_only):
+@click.option("--name", default=None, help="manually set job_name")
+def run(job_id, cmd_only, name=None):
     """Run a job by job_id using job.py's argparse main."""
     from jobman.job import Job
     cfg = get_cfg(job_id)
-    job = Job(cfg)
+    job = Job(cfg, name=name)
     if cmd_only:
         job.execute()
     else:

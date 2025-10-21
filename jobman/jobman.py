@@ -127,7 +127,7 @@ class JobMan:
             fcntl.flock(lock_fp, fcntl.LOCK_UN)
             return f"{next_id:06d}"
     
-    def start_job(self, job_id):
+    def start_job(self, job_id, name=None):
         with self.with_meta_lock() as meta:
             job_meta = meta.get(job_id)
         job_dir = Path(job_meta.get("job_dir"))
@@ -139,6 +139,8 @@ class JobMan:
         
         config_path = job_dir / "config.yaml"
         run_cmd = f"jobman run {job_id}"
+        if name:
+            run_cmd += f" --name {name}"
 
         subprocess.run(f'tmux new-session -d -s {session_name} "{run_cmd} | tee -a {log_file}"', shell=True, check=True)
         

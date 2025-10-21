@@ -4,8 +4,9 @@ from jobman.runner import MultiWorkerRunner
 
 class COMMAND(MultiWorkerRunner):
     
-    def __init__(self, cfg, logger):
-        super().__init__(cfg, logger, action='command')
+    def __init__(self, cfg, logger, name=None):
+        action = name if name is not None else 'command'
+        super().__init__(cfg, logger, action=action)
         
         self.base_cmd = cfg.command.cmd
         self.full_cmd = None
