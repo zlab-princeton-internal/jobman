@@ -101,13 +101,16 @@ def storage():
     
 @cli.command(name="ssh")
 @click.argument("job_id")
-def ssh(job_id):
+@click.option("--i", default=0, help="the id of host to ssh")
+def ssh(job_id, i=0):
     cfg = get_cfg(job_id)
     remote_user = cfg.job.remote_user
     ips = cfg.tpu.get('ips', [])
     if not ips:
         raise ValueError(f'Host0 IP for Job {job_id} not found!')
-    host0_ip = next(ip.get("external_ip") for ip in ips if ip.worker == 0)
+    if i >= len(ips):
+        raise ValueError(f'Host index {i} out of range for Job {job_id}!')
+    host0_ip = next(ip.get("external_ip") for ip in ips if ip.worker == i)
     ssh_cmd = ["ssh", f"{remote_user}@{host0_ip}"]
     subprocess.run(ssh_cmd)
     
