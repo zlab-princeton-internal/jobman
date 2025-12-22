@@ -1,0 +1,22 @@
+# Task Queue
+# ==========
+# State tracked in: tasks_state.yaml (same directory)
+# View status: jobman queue queue_machines/tasks.yaml
+
+repos:
+  maxtext: https://github.com/...
+
+# Defaults applied to ALL tasks (override per-accelerator or per-task)
+defaults:
+  env: maxtext_env
+  repo: maxtext
+  branch: main
+  workdir: maxtext
+  zone: us-central12-b
+  max_jobs: 1
+  max_retries: 3  # Number of retries before marking task as failed
+
+  v4-128:
+    tasks:
+      - id: some-task
+        run: bash train/some_script.sh

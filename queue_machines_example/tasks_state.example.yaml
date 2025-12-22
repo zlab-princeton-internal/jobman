@@ -1,0 +1,32 @@
+# EXAMPLE: This is what tasks_state.yaml looks like after jobs run
+# The actual file is auto-generated - DO NOT edit manually
+# View with: jobman queue queue_machines/tasks.yaml
+
+tasks:
+  pretrain-8b-s42:
+    done: true
+    running: []
+    run_count: 2
+    history:
+      - job_id: '000045'
+        started: '2025-01-15T08:00:00'
+        ended: '2025-01-15T08:45:00'
+        status: interrupted  # preempted
+      - job_id: '000047'
+        started: '2025-01-15T09:00:00'
+        ended: '2025-01-15T14:30:00'
+        status: completed
+
+  pretrain-8b-s43:
+    done: false
+    running:
+      - job_id: '000048'
+        started: '2025-01-15T14:35:00'
+    run_count: 1
+    history: []
+
+  pretrain-8b-s44:
+    done: false
+    running: []
+    run_count: 0
+    history: []

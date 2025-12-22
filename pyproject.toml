@@ -1,0 +1,31 @@
+# pyproject.toml
+[project]
+name = "jobman"
+version = "0.1.0"
+description = "JOBMAN - TPU job manager"
+authors = [{ name = "Yufeng Xu" }]
+requires-python = ">=3.9"
+dependencies = [
+    "click", 
+    "db-dtypes",
+    "fastapi",
+    "gcloud",
+    "google-api-python-client", 
+    "google-auth",
+    "google-cloud-bigquery",
+    "google-cloud-storage",
+    "hydra-core", 
+    "omegaconf", 
+    "pydantic",
+    "streamlit",
+    "tabulate", 
+    "tqdm", 
+    "uvicorn",
+    "yaspin"
+]
+
+[project.scripts]
+jobman = "jobman.cli:cli"
+
+[tool.setuptools]
+packages = ["jobman"]

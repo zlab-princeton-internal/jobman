@@ -1,0 +1,87 @@
+# Queue Worker: v6e-64 @ us-central1-b
+# =====================================
+# Usage: jobman create queue_machines/worker_v6e64_us_central1b.yaml
+
+job:
+  name: ...-qw-${tpu.accelerator}
+  # worker_num is auto-assigned: fills gaps first (e.g., if 1,3,4 exist → assigns 2)
+  env_type: venv
+  loop: true
+  remote_user: ...
+  # Environment variables exported before EACH task
+  environment:
+    BUCKET_NAME: ${gcsfuse.bucket_name}
+    TPU_PREFIX: ${tpu.name}
+  queue:
+    enabled: true
+    config: queue_machines/tasks.yaml
+    # Prefix scripts run ONCE when TPU is ready, in order
+    prefix:
+      - name: "gcloud-setup"
+        workers: 0
+        run: |
+          echo "========================================"
+          echo "[Prefix] Setting up gcloud on worker 0"
+          echo "========================================"
+          gcloud config set project vision-mix
+          gcloud config set compute/zone ${tpu.zone}
+          rm -f ~/.ssh/google_compute_engine ~/.ssh/google_compute_engine.pub
+          ssh-keygen -t rsa -f ~/.ssh/google_compute_engine -C "$USER" -N "" -q
+          gcloud compute os-login ssh-keys add --key-file ~/.ssh/google_compute_engine.pub --quiet
+
+tpu:
+  allocation_mode: "queued-resources"
+  accelerator: v6e-64
+  name: ...-qw-${tpu.accelerator}  # Becomes ...-qw-v6e-64_1 (from worker_num)
+  zone: ...
+  version: ...
+  pricing: spot
+  tags: ["jobman", "queue-worker"]
+  metadata:
+    owner: "..."
+    purpose: "queue worker v6e-64"
+
+gcsfuse:
+  bucket_name: ...
+  mount_path: /home/.../gcs-bucket
+  # No cache for primary mount (checkpoints, etc.)
+
+  # Extra mount with caching for data loading
+  extra_mounts:
+    - mount_path: /home/.../gcs-data
+      # bucket_name: ...  # Optional, defaults to primary bucket
+      cache:
+        dir: /mnt/ramdisk
+        metadata_ttl_secs: -1           # Never expire metadata cache
+        stat_cache_max_size_mb: -1      # Unlimited file metadata cache
+        type_cache_max_size_mb: -1      # Unlimited "does file exist?" cache
+        file_cache_max_size_mb: 550000  # 550GB for file content cache
+        cache_file_for_range_read: true # Cache entire file even if only part is read
+        enable_parallel_downloads: true # Download files faster using multiple connections
+        # Prefix script runs BEFORE this mount to set up ramdisk
+        prefix: |
+          echo "========================================"
+          echo "[Prefix] Setting up RAM disk on $(hostname)"
+          echo "========================================"
+          sudo mkdir -p /mnt/ramdisk
+          if ! mountpoint -q /mnt/ramdisk; then
+              sudo mount -t tmpfs -o size=550G tmpfs /mnt/ramdisk
+              echo "RAM disk mounted"
+          else
+              echo "RAM disk already mounted"
+          fi
+
+ssh:
+  private_key: ~/.ssh/google_rsa
+  identities:
+    - private_key: ~/.ssh/google_rsa
+      public_key: ~/.ssh/google_rsa.pub
+      config_entry: |
+        Host 10.* 34.* 35.*
+          IdentityFile ~/.ssh/google_rsa
+          IdentitiesOnly yes
+
+venv:
+  name: maxtext_env
+  requirements_file: assets/maxtext-requirements.txt
+  python: "python3.10"
