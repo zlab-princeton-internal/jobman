@@ -1,0 +1,18 @@
+tasks:
+  - name: llama3.1-8b-unstructured-S250
+    accelerator: v6-32
+    zone: us-central2-b
+    setup_script: 
+    train_cmd:
+
+  - name: 
+    accelerator:
+    zone:
+    setup_script:
+    train_cmd:
+
+  - name:
+    accelerator:
+    zone:
+    setup_script:
+    train_cmd:

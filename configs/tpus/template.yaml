@@ -1,0 +1,17 @@
+job:
+  loop: true
+  remote_user: zephyr
+
+tpu:
+  allocation_mode: "queued-resources"    # tpu-vm | queued-resources
+  acceleratorType: v4-32
+  name: yufeng-${tpu.accelerator}
+  zone: us-central2-b
+  version: tpu-ubuntu2204-base
+  pricing: spot
+  # spot | ondemand | preemptible
+
+brevo_email:
+  api_key: null
+  sender: null
+  receiver: null

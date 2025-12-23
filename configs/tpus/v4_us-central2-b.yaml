@@ -1,0 +1,27 @@
+loop: true
+
+tpu:
+  allocation_mode: "queued-resources"    # tpu-vm | queued-resources
+  acceleratorType: v4-32
+  name: yufeng-${tpu.accelerator}
+  zone: us-central2-b
+  version: tpu-ubuntu2204-base
+  pricing: spot
+  # spot | ondemand | preemptible
+  flags:
+    - "--network=tpu-vpc"
+    - "--subnetwork=tpu-us-central2"
+
+gcsfuse:
+  bucket_name: llm_pruning_us_central2_b
+  mount_path: /home/zephyr/gcs-bucket
+
+ssh:
+  private_key: ~/.ssh/id_rsa
+  identities:
+    - private_key: ~/.ssh/id_rsa
+      public_key: ~/.ssh/id_rsa.pub
+      config_entry: |
+        Host 10.* 34.* 35.*
+          IdentityFile ~/.ssh/id_rsa
+          IdentitiesOnly yes
