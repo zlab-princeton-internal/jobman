@@ -87,17 +87,35 @@ class JobMan:
         if cfg.gcsfuse:
             self.logger.info("checking TPU-bucket region consistency...")
             zone = cfg.tpu.zone
-            try:
-                region = subprocess.run(
-                    ["gcloud", "storage", "buckets", "describe", f"gs://{cfg.gcsfuse.bucket_name}", "--format=value(location)"],
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True
-                ).stdout.strip().lower()
-            except Exception as e:
-                raise Exception(f"Checking bucket gs://{cfg.gcsfuse.bucket_name} region failed: {e}")
-                
-            if not zone.startswith(region):
-                raise ValueError(f"Bucket region {region} does not match TPU VM zone {cfg.tpu.zone}. It's strongly suggested to confirm these configurations match to minimize cost.")
-        
+
+            # Collect all buckets to check: primary + extra_mounts
+            buckets_to_check = [cfg.gcsfuse.bucket_name]
+
+            extra_mounts = getattr(cfg.gcsfuse, 'extra_mounts', None)
+            if extra_mounts:
+                from omegaconf import OmegaConf
+                if OmegaConf.is_config(extra_mounts):
+                    extra_mounts = OmegaConf.to_container(extra_mounts, resolve=True)
+                for mount in extra_mounts:
+                    extra_bucket = mount.get('bucket_name')
+                    if extra_bucket and extra_bucket not in buckets_to_check:
+                        buckets_to_check.append(extra_bucket)
+
+            # Check each bucket's region
+            for bucket_name in buckets_to_check:
+                try:
+                    region = subprocess.run(
+                        ["gcloud", "storage", "buckets", "describe", f"gs://{bucket_name}", "--format=value(location)"],
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True
+                    ).stdout.strip().lower()
+                except Exception as e:
+                    raise Exception(f"Checking bucket gs://{bucket_name} region failed: {e}")
+
+                if not zone.startswith(region):
+                    raise ValueError(f"Bucket '{bucket_name}' region '{region}' does not match TPU VM zone '{cfg.tpu.zone}'. It's strongly suggested to confirm these configurations match to minimize cost.")
+
+                self.logger.info(f"  bucket '{bucket_name}' region '{region}' matches zone '{zone}'")
+
         return True
             
     def _find_next_worker_num(self, base_name):
