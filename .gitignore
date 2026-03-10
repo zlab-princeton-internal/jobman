@@ -1,0 +1,9 @@
+**/__pycache__
+**.egg-info
+
+logs/
+queue.json
+queue.json.lock
+worker_counter
+workers.json
+plan.md
