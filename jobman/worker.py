@@ -17,15 +17,18 @@ from .tpu import TPU, AllocationMode, Pricing, DEFAULT_TPU_VERSION
 from .utils import get_logger, jobman_dir, jobman_log_dir
 
 logger = get_logger(__name__)
+_RETRYABLE_FAILURE_PATTERN = "Main command finished with errors, check the logs located in"
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _tee_to_stdout(proc) -> None:
+def _tee_to_stdout(proc, buffer: list[str] | None = None) -> None:
     """Read proc.stdout lines and write them to sys.stdout."""
     for line in proc.stdout:
+        if buffer is not None:
+            buffer.append(line)
         sys.stdout.write(line)
         sys.stdout.flush()
 
@@ -351,6 +354,7 @@ class Worker:
         if control_state is not None:
             return control_state, False
         if self.debug:
+            output_buffer: list[str] = []
             scp_result = subprocess.run(
                 self._scp_cmd(script_path, remote_script, 0),
                 capture_output=False,
@@ -381,7 +385,7 @@ class Worker:
                 stderr=subprocess.STDOUT,
                 text=True,
             )
-            tee_thread = threading.Thread(target=_tee_to_stdout, args=(proc,), daemon=True)
+            tee_thread = threading.Thread(target=_tee_to_stdout, args=(proc, output_buffer), daemon=True)
             tee_thread.start()
             exit_code, control_state = self._wait_for_task_process(proc, task_id)
             tee_thread.join()
@@ -443,6 +447,17 @@ class Worker:
                     lf.write(f"=== Task {task_id} externally {control_state} during execution ===\n")
                     return control_state, False
 
+        pattern_detected = False
+        if exit_code == 0:
+            if self.debug:
+                pattern_detected = self._has_retryable_failure_pattern(text="".join(output_buffer))
+            else:
+                pattern_detected = self._has_retryable_failure_pattern(log_file=log_file)
+            if pattern_detected:
+                logger.warning("Task %s matched retryable failure pattern despite exit code 0", task_id)
+                self._record_timeline("task_retryable_pattern_detected", task_id=task_id)
+                return "failed", False
+
         if exit_code == 255:
             # Possible preemption
             if self._is_preempted():
@@ -491,6 +506,17 @@ class Worker:
                 exit_code = self._terminate_task_process(proc, task_id, control_state)
                 return exit_code, control_state
             time.sleep(self._TASK_CONTROL_POLL_INTERVAL)
+
+    def _has_retryable_failure_pattern(self, text: str = "", log_file: str = "") -> bool:
+        if text:
+            return _RETRYABLE_FAILURE_PATTERN in text
+        if log_file and os.path.exists(log_file):
+            try:
+                with open(log_file) as f:
+                    return _RETRYABLE_FAILURE_PATTERN in f.read()
+            except OSError:
+                logger.warning("Failed to read task log %s for retryable failure detection", log_file)
+        return False
 
     def _is_preempted(self) -> bool:
         status = self.tpu.status()

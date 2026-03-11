@@ -34,6 +34,18 @@ require_command() {
   fi
 }
 
+unlock_dpkg_if_needed() {
+  if sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; then
+    local lock_pid
+    lock_pid="$(sudo lsof -t /var/lib/dpkg/lock-frontend || true)"
+    if [[ -n "$lock_pid" ]]; then
+      warn "Killing process $lock_pid holding dpkg lock"
+      sudo kill -9 "$lock_pid" || true
+      sleep 2
+    fi
+  fi
+}
+
 ensure_state_dir() {
   mkdir -p "$STATE_DIR"
 }
@@ -116,17 +128,9 @@ ensure_gcsfuse() {
   curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg |
     sudo tee /usr/share/keyrings/cloud.google.asc >/dev/null
 
-  if sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; then
-    local lock_pid
-    lock_pid="$(sudo lsof -t /var/lib/dpkg/lock-frontend || true)"
-    if [[ -n "$lock_pid" ]]; then
-      warn "Killing process $lock_pid holding dpkg lock"
-      sudo kill -9 "$lock_pid" || true
-      sleep 2
-    fi
-  fi
-
+  unlock_dpkg_if_needed
   sudo apt-get update -y
+  unlock_dpkg_if_needed
   sudo apt-get install -y gcsfuse
 
   require_command gcsfuse
@@ -165,7 +169,7 @@ ensure_cached_data_mount() {
     "$BUCKET_NAME" \
     "$DATA_MOUNT_PATH" \
     --implicit-dirs \
-    --file-cache-path="$RAMDISK_PATH" \
+    --cache-dir="$RAMDISK_PATH" \
     --metadata-cache-ttl-secs=-1 \
     --stat-cache-max-size-mb=-1 \
     --type-cache-max-size-mb=-1 \
@@ -177,6 +181,20 @@ ensure_cached_data_mount() {
 ensure_python() {
   log "Checking Python interpreter: $PYTHON_BIN"
   require_command "$PYTHON_BIN"
+}
+
+ensure_python_venv_support() {
+  local venv_pkg="${PYTHON_BIN}-venv"
+  if dpkg -s "$venv_pkg" >/dev/null 2>&1; then
+    log "$venv_pkg already installed"
+    return
+  fi
+
+  log "Installing $venv_pkg"
+  unlock_dpkg_if_needed
+  sudo apt-get update -y
+  unlock_dpkg_if_needed
+  sudo apt-get install -y "$venv_pkg"
 }
 
 ensure_maxtext_repo() {
@@ -197,14 +215,21 @@ ensure_maxtext_repo() {
 
 ensure_venv() {
   ensure_python
+  ensure_python_venv_support
 
-  if [[ -x "$VENV_DIR/bin/python" ]]; then
+  if [[ -x "$VENV_DIR/bin/python" && -x "$VENV_DIR/bin/pip" ]]; then
     log "Virtualenv already exists: $VENV_DIR"
     return
   fi
 
+  if [[ -d "$VENV_DIR" ]]; then
+    warn "Virtualenv at $VENV_DIR is incomplete; removing and recreating it"
+    rm -rf "$VENV_DIR"
+  fi
+
   mkdir -p "$(dirname "$VENV_DIR")"
   "$PYTHON_BIN" -m venv "$VENV_DIR"
+  "$VENV_DIR/bin/python" -m pip --version >/dev/null
   log "Created virtualenv: $VENV_DIR"
 }
 

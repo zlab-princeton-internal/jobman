@@ -23,6 +23,8 @@ PRICING_CHOICES = click.Choice(["spot", "preemptible", "standard"])
 MODE_CHOICES = click.Choice(["tpu-vm", "queued-resources"])
 OWNER_FILE = ".jobman_owner"
 MAX_OWNER_LENGTH = 20
+ACCELERATOR_PATTERN = re.compile(r"^v[a-z0-9]+-\d+$", re.IGNORECASE)
+ZONE_PATTERN = re.compile(r"^[a-z]+(?:-[a-z0-9]+)+\d-[a-z]$")
 
 
 # ---------------------------------------------------------------------------
@@ -392,10 +394,12 @@ def submit(script, name, accelerator, zone, tpu_version, max_retries, pricing):
 
     if not task_spec["accelerator"]:
         raise click.UsageError("--accelerator required (or set #JOBMAN --accelerator=...)")
+    _validate_accelerator(task_spec["accelerator"])
     if not task_spec["tpu_version"]:
         task_spec["tpu_version"] = resolve_tpu_version(task_spec["accelerator"])
     if not task_spec["zone"]:
         raise click.UsageError("--zone required (or set #JOBMAN --zone=...)")
+    _validate_zone(task_spec["zone"])
 
     q = Queue()
     task_id = q.submit(task_spec)
@@ -520,10 +524,11 @@ def status(accelerator, zone, workers_only, task_only):
     if not tasks:
         click.echo("  (empty)")
         return
-    click.echo(f"{'#':<4} {'ID':<18} {'NAME':<20} {'STATUS':<12} {'ACCELERATOR':<12} {'ZONE':<20} {'WORKER'}")
+    click.echo(f"{'#':<4} {'ID':<18} {'NAME':<40} {'STATUS':<12} {'RETRY':<7} {'ACCELERATOR':<12} {'ZONE':<20} {'WORKER'}")
     for idx, t in tasks:
         worker_id = t.get("worker_id") or "-"
-        click.echo(f"{idx:<4} {t['id']:<18} {t['name']:<20} {t['status']:<12} "
+        retry = f"{t.get('fail_count', 0)}/{t.get('max_retries', 3)}"
+        click.echo(f"{idx:<4} {t['id']:<18} {t['name']:<40} {t['status']:<12} {retry:<7} "
                    f"{t['accelerator']:<12} {t.get('zone',''):<20} {worker_id}")
 
 
@@ -723,6 +728,24 @@ def _parse_headers(script_path: str) -> dict[str, str]:
                 val = match.group(2) or "true"
                 headers[key] = val
     return headers
+
+
+def _validate_accelerator(value: str) -> str:
+    accelerator = value.strip()
+    if not ACCELERATOR_PATTERN.fullmatch(accelerator):
+        raise click.UsageError(
+            f"Invalid accelerator '{value}'. Expected values like v4-8, v5e-16, or v6e-32."
+        )
+    return accelerator
+
+
+def _validate_zone(value: str) -> str:
+    zone = value.strip()
+    if not ZONE_PATTERN.fullmatch(zone):
+        raise click.UsageError(
+            f"Invalid zone '{value}'. Expected a GCP zone like us-central2-b."
+        )
+    return zone
 
 
 def _read_workers() -> dict:

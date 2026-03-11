@@ -47,7 +47,7 @@ class CLITests(unittest.TestCase):
     def test_submit_snapshots_script_into_task_dir(self):
         script = self._write_script()
 
-        result = self.runner.invoke(cli, ["submit", str(script)])
+        result = self.runner.invoke(cli, ["task", "submit", str(script)])
 
         self.assertEqual(result.exit_code, 0, result.output)
         queue_data = json.loads((self.state_dir / "queue.json").read_text())
@@ -58,6 +58,34 @@ class CLITests(unittest.TestCase):
         snapshot_path = Path(task["script"])
         self.assertTrue(snapshot_path.exists())
         self.assertEqual(snapshot_path.read_text(), script.read_text())
+
+    def test_submit_rejects_invalid_accelerator_in_script(self):
+        script = self.state_dir / "bad_accel.sh"
+        script.write_text(
+            "#!/bin/bash\n"
+            "#JOBMAN --accelerator=bad-value\n"
+            "#JOBMAN --zone=us-central2-b\n"
+            "echo hello\n"
+        )
+
+        result = self.runner.invoke(cli, ["task", "submit", str(script)])
+
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("Invalid accelerator 'bad-value'", result.output)
+
+    def test_submit_rejects_invalid_zone_in_script(self):
+        script = self.state_dir / "bad_zone.sh"
+        script.write_text(
+            "#!/bin/bash\n"
+            "#JOBMAN --accelerator=v4-8\n"
+            "#JOBMAN --zone=invalid_zone\n"
+            "echo hello\n"
+        )
+
+        result = self.runner.invoke(cli, ["task", "submit", str(script)])
+
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("Invalid zone 'invalid_zone'", result.output)
 
     def test_status_rejects_workers_only_and_task_only_together(self):
         result = self.runner.invoke(cli, ["status", "-wo", "-to"])
