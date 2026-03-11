@@ -6,4 +6,8 @@ queue.json
 queue.json.lock
 worker_counter
 workers.json
+.jobman_owner
+
 plan.md
+CLAUDE.md
+AGENTS.md

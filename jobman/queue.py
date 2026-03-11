@@ -3,16 +3,18 @@
 import fcntl
 import json
 import os
+import shutil
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
-from typing import Any, Optional
+from pathlib import Path
+from typing import Any, Optional, List
 
-from .utils import get_logger, jobman_dir
+from .utils import get_logger, jobman_dir, jobman_log_dir
 
 logger = get_logger(__name__)
 
-TaskStatus = str  # "pending" | "running" | "done" | "failed" | "cancelled" | "interrupted"
+TaskStatus = str  # "pending" | "running" | "paused" | "done" | "failed" | "interrupted"
 
 
 def _now() -> str:
@@ -32,10 +34,12 @@ class Queue:
     def submit(self, task_spec: dict[str, Any]) -> str:
         """Add a task to the queue. Returns the assigned task ID."""
         task_id = "task_" + uuid.uuid4().hex[:8]
+        script_path = self._snapshot_task_script(task_id, task_spec["script"])
         task: dict[str, Any] = {
             "id": task_id,
             "name": task_spec.get("name", task_id),
-            "script": task_spec["script"],
+            "script": script_path,
+            "source_script": task_spec["script"],
             "accelerator": task_spec["accelerator"],
             "zone": task_spec["zone"],
             "tpu_version": task_spec.get("tpu_version", "tpu-ubuntu2204-base"),
@@ -76,12 +80,18 @@ class Queue:
             if task is None:
                 logger.warning("release: task %s not found", task_id)
                 return
+            paused = task.get("status") == "paused"
             if status == "failed":
                 task["fail_count"] = task.get("fail_count", 0) + 1
                 if task["fail_count"] >= task.get("max_retries", 3):
                     task["status"] = "failed"
                     logger.info("Task %s permanently failed after %d retries",
                                 task_id, task["fail_count"])
+                elif paused:
+                    task["worker_id"] = None
+                    task["ended"] = _now()
+                    logger.info("Task %s failed while paused; keeping it paused", task_id)
+                    return
                 else:
                     task["status"] = "pending"
                     task["worker_id"] = None
@@ -89,11 +99,12 @@ class Queue:
                                 task_id, task["fail_count"], task["max_retries"])
                     return
             elif status == "interrupted":
-                # Re-queue without incrementing fail_count
-                task["status"] = "pending"
+                # Re-queue without incrementing fail_count unless paused.
+                task["status"] = "paused" if paused else "pending"
                 task["worker_id"] = None
                 task["started"] = None
-                logger.info("Task %s interrupted, re-queuing", task_id)
+                logger.info("Task %s interrupted, %s",
+                            task_id, "keeping paused" if paused else "re-queuing")
                 return
             else:
                 task["status"] = status
@@ -106,19 +117,31 @@ class Queue:
         return sorted(data.values(), key=lambda t: t.get("submitted", ""))
 
     def cancel(self, task_id: str) -> bool:
-        """Cancel a pending or running task. Returns True if cancelled."""
+        """Delete a task from the queue. Returns True if deleted."""
         with self._locked() as tasks:
             task = tasks.get(task_id)
             if task is None:
                 return False
-            if task["status"] not in ("pending", "running"):
+            del tasks[task_id]
+            logger.info("Deleted task %s from queue", task_id)
+            return True
+
+    def pause(self, task_id: str) -> bool:
+        """Pause a pending or running task. Returns True if paused."""
+        with self._locked() as tasks:
+            task = tasks.get(task_id)
+            if task is None:
                 return False
-            task["status"] = "cancelled"
+            if task["status"] not in ("pending", "running", "paused"):
+                return False
+            task["status"] = "paused"
+            task["worker_id"] = None
             task["ended"] = _now()
+            logger.info("Paused task %s", task_id)
             return True
 
     def reset(self, task_id: str) -> bool:
-        """Reset a failed/cancelled task back to pending. Returns True if reset."""
+        """Reset a failed/paused task back to pending. Returns True if reset."""
         with self._locked() as tasks:
             task = tasks.get(task_id)
             if task is None:
@@ -133,6 +156,21 @@ class Queue:
     def get(self, task_id: str) -> Optional[dict]:
         """Return a single task by ID."""
         return self._read().get(task_id)
+
+    def release_worker_tasks(self, worker_id: str) -> List[str]:
+        """Re-queue running tasks currently assigned to a worker."""
+        released: List[str] = []
+        with self._locked() as tasks:
+            for task in tasks.values():
+                if task.get("worker_id") != worker_id or task.get("status") != "running":
+                    continue
+                task["status"] = "pending"
+                task["worker_id"] = None
+                task["started"] = None
+                released.append(task["id"])
+        for task_id in released:
+            logger.info("Released running task %s from worker %s", task_id, worker_id)
+        return released
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -149,6 +187,15 @@ class Queue:
         with open(tmp, "w") as f:
             json.dump(tasks, f, indent=2)
         os.replace(tmp, self._path)
+
+    def _snapshot_task_script(self, task_id: str, script_path: str) -> str:
+        """Copy the submitted script into the task directory and return the snapshot path."""
+        task_dir = os.path.join(jobman_log_dir(), "tasks", task_id)
+        os.makedirs(task_dir, exist_ok=True)
+        src = Path(script_path)
+        dst = Path(task_dir) / src.name
+        shutil.copy2(src, dst)
+        return str(dst)
 
     @contextmanager
     def _locked(self):

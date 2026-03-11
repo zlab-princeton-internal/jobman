@@ -35,39 +35,60 @@ python train.py
 ```bash
 # Start a worker (holds the TPU, polls for tasks)
 jobman worker start --accelerator=v4-8 --zone=us-central2-b
-jobman worker list
 jobman worker stop my-tpu
 
 # Submit tasks
-jobman submit train.sh
-jobman submit train.sh --name=run-1 --accelerator=v4-8 --zone=us-central2-b
+jobman task submit train.sh
+jobman task submit train.sh --name=run-1 --accelerator=v4-8 --zone=us-central2-b
 
 # Monitor
 jobman status
-jobman logs <task-id>
-jobman logs <task-id> --follow
+jobman task logs <task-id>
+jobman task logs <task-id> --follow
+jobman worker show my-tpu
 
 # Manage tasks
-jobman cancel <task-id>
-jobman reset <task-id>   # re-queue a failed/cancelled task
+jobman task pause <task-id>
+jobman task requeue <task-id>   # put a failed/paused task back to pending
+jobman task delete <task-id>
 ```
+
+`jobman worker start --startup-script ...` now runs that script as worker bootstrap on all TPU hosts after the TPU becomes ready and before the worker claims any tasks. If bootstrap fails, no task is claimed; the worker retries bootstrap after the TPU is healthy again.
+
+`jobman task pause` and `jobman task delete` now affect running tasks as well: the worker notices the queue-state change, terminates the in-flight SSH command, and then either leaves the task paused or removes it entirely.
 
 ## State Directory
 
-State is stored in `~/.jobman/` (override with `$JOBMAN_DIR`):
+State is stored in `/scratch/yx3038/pruning/jobman-lite` by default (override with `$JOBMAN_DIR`).
+Logs are stored in `/scratch/yx3038/pruning/jobman-lite/logs` by default (override with `$JOBMAN_LOG_DIR`):
 
 ```
-~/.jobman/
+JOBMAN_DIR/
 ├── workers.json          # worker registry
 ├── queue.json            # task queue
-└── logs/
-    ├── workers/<tpu>/worker.log
-    └── tasks/<task-id>/task.log
 ```
+
+```
+JOBMAN_LOG_DIR/
+├── workers/<tpu>/
+│   ├── worker.log
+│   ├── bootstrap.log
+│   ├── <startup-script>.sh
+│   └── timeline.jsonl
+└── tasks/<task-id>/
+    ├── <submitted-script>.sh
+    └── run_*.log
+```
+
+Submitted task scripts are copied into `tasks/<task-id>/` under the log directory at submit time.
+Workers execute that frozen copy rather than the original source path.
+Worker bootstrap output is written under `workers/<tpu>/bootstrap.log`.
+The worker's startup script is copied into `workers/<tpu>/` at worker start time.
+Worker lifecycle events are appended to `workers/<tpu>/timeline.jsonl`.
 
 ## Design
 
-- **No modules** — users handle all env setup inside their script
+- **Worker bootstrap is worker-scoped** — `--startup-script` runs before task claiming, not per task
 - **Worker ID = TPU name** — unique, human-readable
 - **Script runs on worker 0** — user uses `gcloud ... --worker=all` for multi-host setup
 - **fcntl.flock()** for queue atomicity — no database needed

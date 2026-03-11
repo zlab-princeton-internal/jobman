@@ -3,7 +3,8 @@ import os
 import sys
 
 
-def get_logger(name: str, log_file: "str | None" = None, level: int = logging.INFO) -> logging.Logger:
+def get_logger(name: str, log_file: "str | None" = None, level: int = logging.INFO,
+               file_mode: str = "a") -> logging.Logger:
     """Create a logger with console and optional file output."""
     logger = logging.getLogger(name)
     if logger.handlers:
@@ -19,7 +20,7 @@ def get_logger(name: str, log_file: "str | None" = None, level: int = logging.IN
 
     if log_file:
         os.makedirs(os.path.dirname(log_file), exist_ok=True)
-        fh = logging.FileHandler(log_file)
+        fh = logging.FileHandler(log_file, mode=file_mode)
         fh.setFormatter(fmt)
         logger.addHandler(fh)
 
@@ -29,3 +30,8 @@ def get_logger(name: str, log_file: "str | None" = None, level: int = logging.IN
 def jobman_dir() -> str:
     """Return the jobman state directory."""
     return os.environ.get("JOBMAN_DIR", "/scratch/yx3038/pruning/jobman-lite")
+
+
+def jobman_log_dir() -> str:
+    """Return the jobman log directory."""
+    return os.environ.get("JOBMAN_LOG_DIR", os.path.join(jobman_dir(), "logs"))

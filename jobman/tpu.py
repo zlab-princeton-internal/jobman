@@ -18,6 +18,18 @@ Pricing = Literal["spot", "preemptible", "standard"]
 # Default runtime version for TPU VMs
 DEFAULT_TPU_VERSION = "tpu-ubuntu2204-base"
 
+_TPU_VERSION_MAP = {
+    "v4": "tpu-ubuntu2204-base",
+    "v5litepod": "v2-alpha-tpuv5-lite",
+    "v6e": "v2-alpha-tpuv6e",
+}
+
+
+def resolve_tpu_version(accelerator: str) -> str:
+    """Return the appropriate TPU runtime version for a given accelerator type."""
+    family = accelerator.split("-")[0]  # e.g. "v4" from "v4-8"
+    return _TPU_VERSION_MAP.get(family, DEFAULT_TPU_VERSION)
+
 
 def _run(cmd: list[str], check: bool = True, capture: bool = True) -> subprocess.CompletedProcess:
     logger.debug("Running: %s", " ".join(cmd))
@@ -136,7 +148,7 @@ class TPU:
 
     def _create_queued_resource(self) -> None:
         cmd = [
-            "gcloud", "alpha", "compute", "tpus", "queued-resources", "create",
+            "gcloud", "compute", "tpus", "queued-resources", "create",
             self._queued_resource_id,
             f"--node-id={self.name}",
             f"--zone={self.zone}",
@@ -150,7 +162,7 @@ class TPU:
 
     def _queued_resource_status(self) -> TPUStatus:
         result = _run([
-            "gcloud", "alpha", "compute", "tpus", "queued-resources", "describe",
+            "gcloud", "compute", "tpus", "queued-resources", "describe",
             self._queued_resource_id,
             f"--zone={self.zone}", "--format=json"
         ], check=False)
@@ -177,7 +189,7 @@ class TPU:
     def _delete_queued_resource(self) -> None:
         logger.info("Deleting queued resource %s...", self._queued_resource_id)
         result = _run([
-            "gcloud", "alpha", "compute", "tpus", "queued-resources", "delete",
+            "gcloud", "compute", "tpus", "queued-resources", "delete",
             self._queued_resource_id,
             f"--zone={self.zone}", "--quiet", "--force"
         ], check=False)

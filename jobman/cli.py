@@ -1,23 +1,28 @@
 """Click CLI for jobman-lite."""
 
+from __future__ import annotations
+
 import json
 import os
 import re
 import subprocess
 import sys
+from functools import lru_cache
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import click
 
 from .queue import Queue
-from .tpu import TPU, DEFAULT_TPU_VERSION
-from .utils import get_logger, jobman_dir
+from .tpu import TPU, DEFAULT_TPU_VERSION, resolve_tpu_version
+from .utils import get_logger, jobman_dir, jobman_log_dir
 
 logger = get_logger(__name__)
 
 PRICING_CHOICES = click.Choice(["spot", "preemptible", "standard"])
 MODE_CHOICES = click.Choice(["tpu-vm", "queued-resources"])
+OWNER_FILE = ".jobman_owner"
+MAX_OWNER_LENGTH = 20
 
 
 # ---------------------------------------------------------------------------
@@ -27,6 +32,14 @@ MODE_CHOICES = click.Choice(["tpu-vm", "queued-resources"])
 @click.group()
 def cli():
     """jobman-lite: Lightweight TPU job orchestration."""
+
+
+@cli.command("test")
+def run_tests():
+    """Run the full test suite and print a compact summary."""
+    from .test_runner import run_all_tests
+
+    sys.exit(run_all_tests())
 
 
 # ---------------------------------------------------------------------------
@@ -39,21 +52,45 @@ def worker():
 
 
 @worker.command("start")
-@click.option("--accelerator", required=True, help="TPU accelerator type, e.g. v4-8")
-@click.option("--zone", required=True, help="GCP zone, e.g. us-central2-b")
-@click.option("--tpu-name", default=None, help="TPU VM name (auto-generated if omitted)")
-@click.option("--tpu-version", default=DEFAULT_TPU_VERSION, show_default=True,
-              help="TPU runtime version")
-@click.option("--pricing", default="spot", type=PRICING_CHOICES, show_default=True)
-@click.option("--allocation-mode", default="tpu-vm", type=MODE_CHOICES, show_default=True)
-def worker_start(accelerator, zone, tpu_name, tpu_version, pricing, allocation_mode):
+@click.option("--accelerator", "-a", required=True, help="TPU accelerator type, e.g. v4-8")
+@click.option("--zone", "-z", required=True, help="GCP zone, e.g. us-central2-b")
+@click.option("--tpu-name", "-n", default=None, help="TPU VM name (auto-generated if omitted)")
+@click.option("--pricing", "-p", default="spot", type=PRICING_CHOICES, show_default=True)
+@click.option("--allocation-mode", "-m", default="queued-resources", type=MODE_CHOICES, show_default=True)
+@click.option("--startup-script", "-s", type=click.Path(exists=True, dir_okay=False, path_type=Path),
+              default=None, help="Optional bootstrap script to run on all TPU hosts before claiming tasks")
+@click.option("--debug", is_flag=True, default=False,
+              help="Run interactively in the foreground with live output and no log files")
+def worker_start(accelerator, zone, tpu_name, pricing, allocation_mode, startup_script, debug):
     """Start a worker in a background tmux session."""
+    _ensure_owner_name()
     if not tpu_name:
-        tpu_name = _generate_tpu_name(accelerator, zone)
+        tpu_name = _generate_tpu_name(accelerator)
         click.echo(f"Auto-generated TPU name: {tpu_name}")
 
+    tpu_version = resolve_tpu_version(accelerator)
     state_dir = jobman_dir()
     os.makedirs(state_dir, exist_ok=True)
+    startup_script = str(startup_script.resolve()) if startup_script else None
+
+    args = [
+        "python", "-m", "jobman",
+        f"--tpu-name={tpu_name}",
+        f"--accelerator={accelerator}",
+        f"--zone={zone}",
+        f"--tpu-version={tpu_version}",
+        f"--pricing={pricing}",
+        f"--allocation-mode={allocation_mode}",
+    ]
+    if startup_script:
+        args.append(f"--startup-script={startup_script}")
+    if debug:
+        args.append("--debug")
+
+    if debug:
+        click.echo(f"Starting worker '{tpu_name}' in debug mode (Ctrl-C to stop)...")
+        os.execvp(args[0], args)
+        return  # unreachable
 
     session = f"jobman_{tpu_name}"
 
@@ -65,16 +102,7 @@ def worker_start(accelerator, zone, tpu_name, tpu_version, pricing, allocation_m
                    f"Attach with: tmux attach -t {session}")
         sys.exit(1)
 
-    cmd = (
-        f"python -m jobman "
-        f"--tpu-name={tpu_name} "
-        f"--accelerator={accelerator} "
-        f"--zone={zone} "
-        f"--tpu-version={tpu_version} "
-        f"--pricing={pricing} "
-        f"--allocation-mode={allocation_mode}"
-    )
-    tmux_cmd = ["tmux", "new-session", "-d", "-s", session, cmd]
+    tmux_cmd = ["tmux", "new-session", "-d", "-s", session] + args
     subprocess.run(tmux_cmd, check=True)
 
     click.echo(f"Worker started in tmux session '{session}'")
@@ -83,27 +111,35 @@ def worker_start(accelerator, zone, tpu_name, tpu_version, pricing, allocation_m
     click.echo(f"  Zone        : {zone}")
     click.echo(f"  Pricing     : {pricing}")
     click.echo(f"  Mode        : {allocation_mode}")
+    if startup_script:
+        click.echo(f"  Setup       : {startup_script}")
+    if debug:
+        click.echo("  Debug       : enabled")
     click.echo(f"Attach with: tmux attach -t {session}")
 
 
 @worker.command("stop")
-@click.argument("worker_ref")
-def worker_stop(worker_ref):
-    """Stop a worker (by name or index from 'jobman status')."""
+@click.argument("worker_refs", nargs=-1, required=True)
+def worker_stop(worker_refs):
+    """Stop one or more workers (by name or index from 'jobman status')."""
     registry = _read_workers()
-    tpu_name = _resolve_worker_name(worker_ref, registry)
-    if tpu_name is None:
-        click.echo(f"Worker '{worker_ref}' not found.", err=True)
+    worker_names = _resolve_worker_names(worker_refs, registry)
+    failed = False
+    for ref, tpu_name in worker_names:
+        if tpu_name is None:
+            click.echo(f"Worker '{ref}' not found.", err=True)
+            failed = True
+            continue
+        session = f"jobman_{tpu_name}"
+        result = subprocess.run(["tmux", "kill-session", "-t", session], capture_output=True)
+        if result.returncode != 0:
+            click.echo(f"No tmux session '{session}' found.", err=True)
+            failed = True
+            continue
+        _update_worker_status(tpu_name, "stopped")
+        click.echo(f"Worker '{tpu_name}' stopped.")
+    if failed:
         sys.exit(1)
-    session = f"jobman_{tpu_name}"
-    result = subprocess.run(["tmux", "kill-session", "-t", session], capture_output=True)
-    if result.returncode != 0:
-        click.echo(f"No tmux session '{session}' found.")
-        sys.exit(1)
-
-    # Update registry
-    _update_worker_status(tpu_name, "stopped")
-    click.echo(f"Worker '{tpu_name}' stopped.")
 
 
 @worker.command("stop-all")
@@ -129,14 +165,23 @@ def worker_stop_all():
 
 @worker.command("resume")
 @click.argument("worker_ref")
-def worker_resume(worker_ref):
+@click.option("--debug", is_flag=True, default=False,
+              help="Run interactively in the foreground with live output and no log files")
+def worker_resume(worker_ref, debug):
     """Resume a dead worker (by name or index from 'jobman status')."""
     registry = _read_workers()
     tpu_name = _resolve_worker_name(worker_ref, registry)
     if tpu_name is None:
         click.echo(f"Worker '{worker_ref}' not found in registry.", err=True)
         sys.exit(1)
-    w = registry[tpu_name]
+    args = _worker_run_args(registry[tpu_name])
+    if debug:
+        args.append("--debug")
+
+    if debug:
+        click.echo(f"Resuming worker '{tpu_name}' in debug mode (Ctrl-C to stop)...")
+        os.execvp(args[0], args)
+        return  # unreachable
 
     session = f"jobman_{tpu_name}"
     result = subprocess.run(["tmux", "has-session", "-t", session], capture_output=True)
@@ -145,34 +190,116 @@ def worker_resume(worker_ref):
                    f"Attach with: tmux attach -t {session}")
         sys.exit(1)
 
-    cmd = (
-        f"python -m jobman "
-        f"--tpu-name={tpu_name} "
-        f"--accelerator={w['accelerator']} "
-        f"--zone={w['zone']} "
-        f"--tpu-version={w.get('tpu_version', DEFAULT_TPU_VERSION)} "
-        f"--pricing={w.get('pricing', 'spot')} "
-        f"--allocation-mode={w.get('mode', 'tpu-vm')}"
-    )
-    subprocess.run(["tmux", "new-session", "-d", "-s", session, cmd], check=True)
+    subprocess.run(["tmux", "new-session", "-d", "-s", session] + args, check=True)
     click.echo(f"Resumed worker '{tpu_name}' in tmux session '{session}'.")
     click.echo(f"Attach with: tmux attach -t {session}")
 
 
-@worker.command("list")
-def worker_list():
-    """List registered workers with live TPU status from GCP."""
+@worker.command("reboot")
+@click.argument("worker_refs", nargs=-1, required=True)
+def worker_reboot(worker_refs):
+    """Reboot one or more workers (by name or index from 'jobman status')."""
     registry = _read_workers()
-    if not registry:
-        click.echo("No workers registered.")
-        return
-    click.echo("Fetching TPU status from GCP...", err=True)
-    statuses = _fetch_worker_statuses(registry)
-    click.echo(f"{'WORKER':<28} {'ACCELERATOR':<12} {'ZONE':<20} {'PRICING':<12} {'PROCESS':<10} {'TPU'}")
-    for w in registry.values():
-        pstatus, tstatus = statuses.get(w["worker_id"], ("?", "?"))
-        click.echo(f"{w['worker_id']:<28} {w['accelerator']:<12} {w['zone']:<20} "
-                   f"{w.get('pricing',''):<12} {pstatus:<10} {tstatus}")
+    worker_names = _resolve_worker_names(worker_refs, registry)
+    failed = False
+
+    for ref, tpu_name in worker_names:
+        if tpu_name is None or tpu_name not in registry:
+            click.echo(f"Worker '{ref}' not found in registry.", err=True)
+            failed = True
+            continue
+
+        session = f"jobman_{tpu_name}"
+        subprocess.run(["tmux", "kill-session", "-t", session], capture_output=True)
+        _update_worker_status(tpu_name, "stopped")
+
+        try:
+            subprocess.run(["tmux", "new-session", "-d", "-s", session] + _worker_run_args(registry[tpu_name]),
+                           check=True)
+        except subprocess.CalledProcessError:
+            click.echo(f"Failed to reboot worker '{tpu_name}'.", err=True)
+            failed = True
+            continue
+
+        click.echo(f"Worker '{tpu_name}' rebooted.")
+
+    if failed:
+        sys.exit(1)
+
+
+@worker.command("delete")
+@click.argument("worker_refs", nargs=-1, required=True)
+def worker_delete(worker_refs):
+    """Delete one or more workers: stop process, release tasks, delete TPU."""
+    registry = _read_workers()
+    worker_names = _resolve_worker_names(worker_refs, registry)
+    queue = Queue()
+    failed = False
+
+    for ref, tpu_name in worker_names:
+        if tpu_name is None or tpu_name not in registry:
+            click.echo(f"Worker '{ref}' not found in registry.", err=True)
+            failed = True
+            continue
+
+        worker_cfg = registry[tpu_name]
+        session = f"jobman_{tpu_name}"
+        result = subprocess.run(["tmux", "kill-session", "-t", session], capture_output=True)
+        if result.returncode == 0:
+            click.echo(f"Worker '{tpu_name}' stopped.")
+        else:
+            click.echo(f"No tmux session '{session}' found; continuing with delete.")
+        _update_worker_status(tpu_name, "stopped")
+
+        released = queue.release_worker_tasks(tpu_name)
+        if released:
+            click.echo(f"Released tasks: {', '.join(released)}")
+
+        try:
+            TPU(
+                name=worker_cfg["worker_id"],
+                zone=worker_cfg["zone"],
+                accelerator=worker_cfg["accelerator"],
+                version=worker_cfg.get("tpu_version") or resolve_tpu_version(worker_cfg["accelerator"]),
+                pricing=worker_cfg.get("pricing", "spot"),
+                mode=worker_cfg.get("mode", "tpu-vm"),
+            ).delete()
+        except Exception as e:
+            click.echo(f"Failed to delete TPU for worker '{tpu_name}': {e}", err=True)
+            failed = True
+            continue
+
+        _remove_worker(tpu_name)
+        click.echo(f"Worker '{tpu_name}' deleted.")
+
+    if failed:
+        sys.exit(1)
+
+
+@worker.command("ssh")
+@click.argument("worker_ref")
+@click.option("--worker-index", "-w", default=0, show_default=True,
+              help="TPU worker index (for multi-host TPUs)")
+def worker_ssh(worker_ref, worker_index):
+    """Open an interactive SSH session to a worker (by name or index from 'jobman status')."""
+    registry = _read_workers()
+    tpu_name = _resolve_worker_name(worker_ref, registry)
+    if tpu_name is None:
+        click.echo(f"Worker '{worker_ref}' not found.", err=True)
+        sys.exit(1)
+    w = registry.get(tpu_name, {})
+    zone = w.get("zone")
+    if not zone:
+        click.echo(f"No zone found for worker '{tpu_name}'.", err=True)
+        sys.exit(1)
+    cmd = [
+        "gcloud", "compute", "tpus", "tpu-vm", "ssh", tpu_name,
+        f"--zone={zone}",
+        f"--worker={worker_index}",
+        "--ssh-flag=-o StrictHostKeyChecking=no",
+        "--ssh-flag=-o UserKnownHostsFile=/dev/null",
+    ]
+    os.execvp("gcloud", cmd)
 
 
 @worker.command("logs")
@@ -186,7 +313,7 @@ def worker_logs(worker_ref, lines, follow):
     if tpu_name is None:
         click.echo(f"Worker '{worker_ref}' not found.", err=True)
         sys.exit(1)
-    log_file = os.path.join(jobman_dir(), "logs", "workers", tpu_name, "worker.log")
+    log_file = os.path.join(jobman_log_dir(), "workers", tpu_name, "worker.log")
     if not os.path.exists(log_file):
         click.echo(f"No log found for worker {tpu_name}", err=True)
         sys.exit(1)
@@ -197,11 +324,48 @@ def worker_logs(worker_ref, lines, follow):
     subprocess.run(cmd)
 
 
+@worker.command("show")
+@click.argument("worker_ref")
+def worker_show(worker_ref):
+    """Show detailed information for one worker (by name or index from 'jobman status')."""
+    registry = _read_workers()
+    tpu_name = _resolve_worker_name(worker_ref, registry)
+    if tpu_name is None or tpu_name not in registry:
+        click.echo(f"Worker '{worker_ref}' not found.", err=True)
+        sys.exit(1)
+
+    w = registry[tpu_name]
+    click.echo(f"Worker            : {w['worker_id']}")
+    click.echo(f"tmux session      : jobman_{w['worker_id']}")
+    click.echo(f"TPU name          : {w['worker_id']}")
+    click.echo(f"Accelerator       : {w['accelerator']}")
+    click.echo(f"Zone              : {w['zone']}")
+    click.echo(f"Pricing           : {w.get('pricing', 'spot')}")
+    click.echo(f"Mode              : {w.get('mode', 'tpu-vm')}")
+    startup_script = w.get("startup_script")
+    if startup_script:
+        snapshot_path = os.path.join(jobman_log_dir(), "workers", w["worker_id"], os.path.basename(startup_script))
+        click.echo(f"Setup             : {snapshot_path}")
+    process_status = _process_status(w)
+    tpu_status = _query_tpu_status(w)
+    click.echo(f"Process status    : {process_status}")
+    click.echo(f"TPU status        : {tpu_status}")
+    click.echo(f"Attach with       : tmux attach -t jobman_{w['worker_id']}")
+    tpu_url = _tpu_console_url(w)
+    if tpu_url:
+        click.echo(f"URL               : {tpu_url}")
+
+
 # ---------------------------------------------------------------------------
-# jobman submit
+# jobman task
 # ---------------------------------------------------------------------------
 
-@cli.command("submit")
+@cli.group()
+def task():
+    """Manage tasks (queue entries and task logs)."""
+
+
+@task.command("submit")
 @click.argument("script", type=click.Path(exists=True, dir_okay=False))
 @click.option("--name", default=None, help="Task name (overrides #JOBMAN header)")
 @click.option("--accelerator", default=None, help="Override #JOBMAN --accelerator")
@@ -220,7 +384,7 @@ def submit(script, name, accelerator, zone, tpu_version, max_retries, pricing):
         "name": name or headers.get("name") or Path(script).stem,
         "accelerator": accelerator or headers.get("accelerator"),
         "zone": zone or headers.get("zone"),
-        "tpu_version": tpu_version or headers.get("tpu-version", DEFAULT_TPU_VERSION),
+        "tpu_version": tpu_version or headers.get("tpu-version") or None,  # resolved below
         "max_retries": max_retries if max_retries is not None
                        else int(headers.get("max-retries", 3)),
         "pricing": pricing or headers.get("pricing", "spot"),
@@ -228,6 +392,8 @@ def submit(script, name, accelerator, zone, tpu_version, max_retries, pricing):
 
     if not task_spec["accelerator"]:
         raise click.UsageError("--accelerator required (or set #JOBMAN --accelerator=...)")
+    if not task_spec["tpu_version"]:
+        task_spec["tpu_version"] = resolve_tpu_version(task_spec["accelerator"])
     if not task_spec["zone"]:
         raise click.UsageError("--zone required (or set #JOBMAN --zone=...)")
 
@@ -240,71 +406,128 @@ def submit(script, name, accelerator, zone, tpu_version, max_retries, pricing):
 
 
 # ---------------------------------------------------------------------------
-# jobman cancel / reset / status / logs
+# jobman task / status
 # ---------------------------------------------------------------------------
 
-@cli.command("cancel")
-@click.argument("task_ref")
-def cancel(task_ref):
-    """Cancel a pending or running task (by ID or index from 'jobman status')."""
+@task.command("delete")
+@click.argument("task_refs", nargs=-1, required=True)
+def delete(task_refs):
+    """Delete one or more pending/running/paused tasks from the queue (by ID or index)."""
     q = Queue()
-    task_id = _resolve_task_id(task_ref, q)
-    if task_id is None:
-        click.echo(f"Task '{task_ref}' not found.", err=True)
-        sys.exit(1)
-    if q.cancel(task_id):
-        click.echo(f"Task {task_id} cancelled.")
-    else:
-        click.echo(f"Task {task_id} not found or already finished.", err=True)
+    task_ids = _resolve_task_ids(task_refs, q)
+    failed = False
+    for ref, task_id in task_ids:
+        if task_id is None:
+            click.echo(f"Task '{ref}' not found.", err=True)
+            failed = True
+            continue
+        if q.cancel(task_id):
+            click.echo(f"Task {task_id} deleted from queue.")
+        else:
+            click.echo(f"Task {task_id} not found or not deletable.", err=True)
+            failed = True
+    if failed:
         sys.exit(1)
 
 
-@cli.command("reset")
-@click.argument("task_ref")
-def reset(task_ref):
-    """Reset a failed/cancelled task back to pending (by ID or index from 'jobman status')."""
+@task.command("pause")
+@click.argument("task_refs", nargs=-1, required=True)
+def pause(task_refs):
+    """Pause one or more pending/running tasks (by ID or index from 'jobman status')."""
     q = Queue()
-    task_id = _resolve_task_id(task_ref, q)
-    if task_id is None:
-        click.echo(f"Task '{task_ref}' not found.", err=True)
+    task_ids = _resolve_task_ids(task_refs, q)
+    failed = False
+    for ref, task_id in task_ids:
+        if task_id is None:
+            click.echo(f"Task '{ref}' not found.", err=True)
+            failed = True
+            continue
+        if q.pause(task_id):
+            click.echo(f"Task {task_id} paused.")
+        else:
+            click.echo(f"Task {task_id} not found or not pausable.", err=True)
+            failed = True
+    if failed:
         sys.exit(1)
-    if q.reset(task_id):
-        click.echo(f"Task {task_id} reset to pending.")
-    else:
-        click.echo(f"Task {task_id} not found.", err=True)
+
+
+@task.command("requeue")
+@click.argument("task_refs", nargs=-1, required=True)
+def requeue(task_refs):
+    """Reset one or more failed/paused tasks back to pending (by ID or index from 'jobman status')."""
+    q = Queue()
+    task_ids = _resolve_task_ids(task_refs, q)
+    failed = False
+    for ref, task_id in task_ids:
+        if task_id is None:
+            click.echo(f"Task '{ref}' not found.", err=True)
+            failed = True
+            continue
+        if q.reset(task_id):
+            click.echo(f"Task {task_id} reset to pending.")
+        else:
+            click.echo(f"Task {task_id} not found.", err=True)
+            failed = True
+    if failed:
         sys.exit(1)
 
 
 @cli.command("status")
-def status():
+@click.option("--accelerator", "-a", default=None, help="Filter by accelerator type, e.g. v4-8")
+@click.option("--zone", "-z", default=None, help="Filter by GCP zone, e.g. us-central2-b")
+@click.option("--workers-only", "-wo", is_flag=True, help="Show only the worker table")
+@click.option("--task-only", "-to", is_flag=True, help="Show only the task table")
+def status(accelerator, zone, workers_only, task_only):
     """Show workers and task queue summary."""
-    registry = _read_workers()
-    click.echo("=== Workers ===")
-    if registry:
-        click.echo("Fetching TPU status from GCP...", err=True)
-        statuses = _fetch_worker_statuses(registry)
-        click.echo(f"{'#':<4} {'WORKER':<28} {'ACCELERATOR':<12} {'ZONE':<20} {'PROCESS':<10} {'TPU'}")
-        for idx, w in enumerate(registry.values(), 1):
-            pstatus, tstatus = statuses.get(w["worker_id"], ("?", "?"))
-            click.echo(f"{idx:<4} {w['worker_id']:<28} {w['accelerator']:<12} {w['zone']:<20} "
-                       f"{pstatus:<10} {tstatus}")
-    else:
-        click.echo("  (none)")
+    if workers_only and task_only:
+        raise click.UsageError("--workers-only and --task-only cannot be used together")
 
-    click.echo("\n=== Tasks ===")
+    registry = _read_workers()
+    all_workers = list(registry.values())
+    filtered_workers = [
+        (idx, w) for idx, w in enumerate(all_workers, 1)
+        if (accelerator is None or w.get("accelerator") == accelerator)
+        and (zone is None or w.get("zone") == zone)
+    ]
+
+    if not task_only:
+        click.echo("=== Workers ===")
+        if filtered_workers:
+            click.echo("Fetching TPU status from GCP...", err=True)
+            statuses = _fetch_worker_statuses({w["worker_id"]: w for _, w in filtered_workers})
+            click.echo(f"{'#':<4} {'WORKER':<28} {'ACCELERATOR':<12} {'ZONE':<20} {'PROCESS':<10} {'TPU'}")
+            for idx, w in filtered_workers:
+                pstatus, tstatus = statuses.get(w["worker_id"], ("?", "?"))
+                click.echo(f"{idx:<4} {w['worker_id']:<28} {w['accelerator']:<12} {w['zone']:<20} "
+                           f"{pstatus:<10} {tstatus}")
+        else:
+            click.echo("  (none)")
+
+    if workers_only:
+        return
+
+    if not task_only:
+        click.echo("\n=== Tasks ===")
+    else:
+        click.echo("=== Tasks ===")
     q = Queue()
-    tasks = q.list()
+    all_tasks = q.list()
+    tasks = [
+        (idx, t) for idx, t in enumerate(all_tasks, 1)
+        if (accelerator is None or t.get("accelerator") == accelerator)
+        and (zone is None or t.get("zone") == zone)
+    ]
     if not tasks:
         click.echo("  (empty)")
         return
     click.echo(f"{'#':<4} {'ID':<18} {'NAME':<20} {'STATUS':<12} {'ACCELERATOR':<12} {'ZONE':<20} {'WORKER'}")
-    for idx, t in enumerate(tasks, 1):
+    for idx, t in tasks:
         worker_id = t.get("worker_id") or "-"
         click.echo(f"{idx:<4} {t['id']:<18} {t['name']:<20} {t['status']:<12} "
                    f"{t['accelerator']:<12} {t.get('zone',''):<20} {worker_id}")
 
 
-@cli.command("logs")
+@task.command("logs")
 @click.argument("task_ref")
 @click.option("--lines", "-n", default=50, show_default=True, help="Number of tail lines")
 @click.option("--follow", "-f", is_flag=True, help="Follow log output")
@@ -315,8 +538,8 @@ def logs(task_ref, lines, follow):
     if task_id is None:
         click.echo(f"Task '{task_ref}' not found.", err=True)
         sys.exit(1)
-    log_file = os.path.join(jobman_dir(), "logs", "tasks", task_id, "task.log")
-    if not os.path.exists(log_file):
+    log_file = _latest_task_log(task_id)
+    if log_file is None:
         click.echo(f"No log found for task {task_id}", err=True)
         sys.exit(1)
     cmd = ["tail", f"-n{lines}"]
@@ -373,14 +596,115 @@ def _fetch_worker_statuses(workers: dict) -> dict:
     return results
 
 
-def _generate_tpu_name(accelerator: str, zone: str) -> str:
+@lru_cache(maxsize=1)
+def _gcloud_project() -> str | None:
+    try:
+        result = subprocess.run(
+            ["gcloud", "config", "get-value", "project"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return None
+
+    if result.returncode != 0:
+        return None
+    project = (result.stdout or "").strip()
+    if not project or project == "(unset)":
+        return None
+    return project
+
+
+def _tpu_console_url(worker: dict) -> str:
+    zone = worker.get("zone")
+    worker_id = worker.get("worker_id")
+    mode = worker.get("mode", "tpu-vm")
+    if not zone or not worker_id:
+        return ""
+
+    if mode == "queued-resources":
+        path = f"/compute/tpus/queuedResources/details/{zone}/qr-{worker_id}"
+    else:
+        path = f"/compute/tpus/details/{zone}/{worker_id}"
+
+    project = _gcloud_project()
+    query_parts = []
+    query_parts.append(f"authuser=1")
+    if project:
+        query_parts.append(f"project={project}")
+    query = f"?{'&'.join(query_parts)}" if query_parts else ""
+    return f"https://console.cloud.google.com{path}{query}"
+
+
+def _owner_file_path() -> Path:
+    return Path.cwd() / OWNER_FILE
+
+
+def _validate_owner_name(value: str) -> str:
+    owner = value.strip().lower()
+    if not owner:
+        raise click.UsageError("Owner name cannot be empty.")
+    if " " in owner:
+        raise click.UsageError("Owner name cannot contain spaces.")
+    if len(owner) > MAX_OWNER_LENGTH:
+        raise click.UsageError(f"Owner name must be at most {MAX_OWNER_LENGTH} characters.")
+    if not re.fullmatch(r"[a-z0-9-]+", owner):
+        raise click.UsageError("Owner name may contain only lowercase letters, digits, and hyphens.")
+    return owner
+
+
+def _ensure_owner_name() -> str:
+    owner_path = _owner_file_path()
+    if owner_path.exists():
+        try:
+            return _validate_owner_name(owner_path.read_text().strip())
+        except (OSError, click.UsageError) as exc:
+            raise click.ClickException(
+                f"Invalid owner file at {owner_path}: {exc}. "
+                f"Fix or remove it and rerun 'jobman worker start'."
+            ) from exc
+
+    owner = _prompt_owner_name()
+    owner_path.write_text(owner + "\n")
+    click.echo(f"Saved owner name to {owner_path}")
+    return owner
+
+
+def _prompt_owner_name() -> str:
+    while True:
+        value = click.prompt(f"Enter owner name (lowercase, no spaces, <= {MAX_OWNER_LENGTH} chars)")
+        try:
+            return _validate_owner_name(value)
+        except click.UsageError as exc:
+            click.echo(str(exc), err=True)
+
+
+def _generate_tpu_name(accelerator: str) -> str:
+    owner = _ensure_owner_name()
     counter_path = os.path.join(jobman_dir(), "worker_counter")
     try:
         count = int(Path(counter_path).read_text().strip()) + 1
     except (FileNotFoundError, ValueError):
         count = 1
     Path(counter_path).write_text(str(count))
-    return f"{accelerator}-{zone}-{count:05d}"
+    return f"{owner}-{accelerator}-{count:05d}"
+
+
+def _worker_run_args(worker: dict) -> list[str]:
+    """Build the worker process argv from a registry entry."""
+    args = [
+        "python", "-m", "jobman",
+        f"--tpu-name={worker['worker_id']}",
+        f"--accelerator={worker['accelerator']}",
+        f"--zone={worker['zone']}",
+        f"--tpu-version={worker.get('tpu_version') or resolve_tpu_version(worker['accelerator'])}",
+        f"--pricing={worker.get('pricing', 'spot')}",
+        f"--allocation-mode={worker.get('mode', 'tpu-vm')}",
+    ]
+    if worker.get("startup_script"):
+        args.append(f"--startup-script={worker['startup_script']}")
+    return args
 
 
 def _parse_headers(script_path: str) -> dict[str, str]:
@@ -412,6 +736,23 @@ def _read_workers() -> dict:
         return {}
 
 
+def _latest_task_log(task_id: str) -> str | None:
+    """Return the most recently modified run log for a task from known log roots, or None."""
+    log_dirs = [
+        Path(jobman_log_dir()) / "tasks" / task_id,
+        Path(jobman_dir()) / "logs" / "tasks" / task_id,
+    ]
+    candidates: list[Path] = []
+    for log_dir in log_dirs:
+        if not log_dir.is_dir():
+            continue
+        candidates.extend(log_dir.glob("run_*.log"))
+    if not candidates:
+        return None
+    latest = max(candidates, key=lambda p: p.stat().st_mtime)
+    return str(latest)
+
+
 def _resolve_task_id(ref: str, q: Queue) -> str | None:
     """Resolve a task reference: integer index (1-based) or task ID string."""
     if ref.isdigit():
@@ -434,6 +775,34 @@ def _resolve_worker_name(ref: str, registry: dict) -> str | None:
     return ref  # pass through unknown names; callers decide if that's valid
 
 
+def _resolve_task_ids(refs: tuple[str, ...], q: Queue) -> list[tuple[str, str | None]]:
+    """Resolve multiple task references against a stable snapshot."""
+    tasks = q.list()
+    resolved = []
+    for ref in refs:
+        if ref.isdigit():
+            idx = int(ref) - 1
+            task_id = tasks[idx]["id"] if 0 <= idx < len(tasks) else None
+        else:
+            task_id = ref
+        resolved.append((ref, task_id))
+    return resolved
+
+
+def _resolve_worker_names(refs: tuple[str, ...], registry: dict) -> list[tuple[str, str | None]]:
+    """Resolve multiple worker references against a stable snapshot."""
+    workers = list(registry.values())
+    resolved = []
+    for ref in refs:
+        if ref.isdigit():
+            idx = int(ref) - 1
+            worker_name = workers[idx]["worker_id"] if 0 <= idx < len(workers) else None
+        else:
+            worker_name = ref
+        resolved.append((ref, worker_name))
+    return resolved
+
+
 def _update_worker_status(tpu_name: str, status: str) -> None:
     path = os.path.join(jobman_dir(), "workers.json")
     if not os.path.exists(path):
@@ -449,3 +818,19 @@ def _update_worker_status(tpu_name: str, status: str) -> None:
         os.replace(tmp, path)
     except (json.JSONDecodeError, OSError) as e:
         logger.warning("Failed to update worker status: %s", e)
+
+
+def _remove_worker(tpu_name: str) -> None:
+    path = os.path.join(jobman_dir(), "workers.json")
+    if not os.path.exists(path):
+        return
+    try:
+        with open(path) as f:
+            registry = json.load(f)
+        registry.pop(tpu_name, None)
+        tmp = path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(registry, f, indent=2)
+        os.replace(tmp, path)
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning("Failed to remove worker from registry: %s", e)

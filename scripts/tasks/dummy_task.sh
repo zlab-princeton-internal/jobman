@@ -2,7 +2,7 @@
 #JOBMAN --accelerator=v4-8
 #JOBMAN --zone=us-central2-b
 #JOBMAN --name=hello-tpu
-#JOBMAN --max-retries=1
+#JOBMAN --max-retries=3
 
 # Run a simple echo on all TPU hosts to verify connectivity.
 # JOBMAN injects: JOBMAN_TPU_NAME, JOBMAN_ZONE, JOBMAN_NUM_WORKERS
