@@ -200,7 +200,7 @@ class TPU:
 
     def _create_queued_resource(self) -> None:
         cmd = [
-            "gcloud", "alpha", "compute", "tpus", "queued-resources", "create",
+            "gcloud", "compute", "tpus", "queued-resources", "create",
             self._queued_resource_id,
             f"--node-id={self.name}",
             f"--zone={self.zone}",

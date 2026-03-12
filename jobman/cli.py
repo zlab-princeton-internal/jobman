@@ -659,7 +659,6 @@ def task_show(task_ref):
     click.echo(f"Started           : {t.get('started') or '-'}")
     click.echo(f"Ended             : {t.get('ended') or '-'}")
     click.echo(f"Script            : {t.get('script') or '-'}")
-    click.echo(f"Source script     : {t.get('source_script') or '-'}")
     log_file = _latest_task_log(task_id)
     if log_file:
         click.echo(f"Latest log        : {log_file}")

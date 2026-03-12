@@ -59,6 +59,21 @@ class CLITests(unittest.TestCase):
         self.assertTrue(snapshot_path.exists())
         self.assertEqual(snapshot_path.read_text(), script.read_text())
 
+    def test_task_show_hides_source_script(self):
+        script = self._write_script()
+
+        submit_result = self.runner.invoke(cli, ["task", "submit", str(script)])
+        self.assertEqual(submit_result.exit_code, 0, submit_result.output)
+
+        queue_data = json.loads((self.state_dir / "queue.json").read_text())
+        task = next(iter(queue_data.values()))
+
+        show_result = self.runner.invoke(cli, ["task", "show", task["id"]])
+
+        self.assertEqual(show_result.exit_code, 0, show_result.output)
+        self.assertIn(f"Script            : {task['script']}", show_result.output)
+        self.assertNotIn("Source script", show_result.output)
+
     def test_submit_rejects_invalid_accelerator_in_script(self):
         script = self.state_dir / "bad_accel.sh"
         script.write_text(
