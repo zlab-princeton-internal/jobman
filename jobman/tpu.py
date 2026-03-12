@@ -1,6 +1,7 @@
 """TPU lifecycle management for jobman-lite."""
 
 import json
+import shlex
 import subprocess
 import time
 from dataclasses import dataclass, field
@@ -31,9 +32,33 @@ def resolve_tpu_version(accelerator: str) -> str:
     return _TPU_VERSION_MAP.get(family, DEFAULT_TPU_VERSION)
 
 
-def _run(cmd: list[str], check: bool = True, capture: bool = True) -> subprocess.CompletedProcess:
-    logger.debug("Running: %s", " ".join(cmd))
-    return subprocess.run(cmd, capture_output=capture, text=True, check=check)
+def _format_cmd(cmd: list[str]) -> str:
+    return shlex.join(cmd)
+
+
+def _command_output(result: subprocess.CompletedProcess) -> str:
+    parts = []
+    stdout = (result.stdout or "").strip()
+    stderr = (result.stderr or "").strip()
+    if stderr:
+        parts.append(f"stderr: {stderr}")
+    if stdout:
+        parts.append(f"stdout: {stdout}")
+    return "\n".join(parts)
+
+
+def _run(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess:
+    cmd_str = _format_cmd(cmd)
+    logger.debug("Running: %s", cmd_str)
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        detail = _command_output(result) or "no stdout/stderr"
+        logger.warning("gcloud command failed (%d): %s\n%s", result.returncode, cmd_str, detail)
+        if check:
+            raise RuntimeError(
+                f"Command failed ({result.returncode}): {cmd_str}\n{detail}"
+            )
+    return result
 
 
 @dataclass
@@ -141,7 +166,7 @@ class TPU:
             cmd.append("--preemptible")
         logger.info("Creating TPU VM %s (%s) in %s [%s]...", self.name, self.accelerator,
                     self.zone, self.pricing)
-        _run(cmd, check=True, capture=False)
+        _run(cmd, check=True)
 
     def _tpu_vm_status(self) -> TPUStatus:
         result = _run([
@@ -165,8 +190,9 @@ class TPU:
             "gcloud", "compute", "tpus", "tpu-vm", "delete", self.name,
             f"--zone={self.zone}", "--quiet"
         ], check=False)
-        if result.returncode != 0 and "NOT_FOUND" not in result.stderr:
-            logger.warning("Failed to delete TPU VM %s: %s", self.name, result.stderr)
+        stderr = result.stderr or ""
+        if result.returncode != 0 and "NOT_FOUND" not in stderr and "not found" not in stderr.lower():
+            logger.warning("Failed to delete TPU VM %s", self.name)
 
     # ------------------------------------------------------------------
     # Queued-resources mode helpers
@@ -174,7 +200,7 @@ class TPU:
 
     def _create_queued_resource(self) -> None:
         cmd = [
-            "gcloud", "compute", "tpus", "queued-resources", "create",
+            "gcloud", "alpha", "compute", "tpus", "queued-resources", "create",
             self._queued_resource_id,
             f"--node-id={self.name}",
             f"--zone={self.zone}",
@@ -184,7 +210,7 @@ class TPU:
         if self.pricing == "spot":
             cmd.append("--spot")
         logger.info("Creating queued resource %s for TPU %s...", self._queued_resource_id, self.name)
-        _run(cmd, check=True, capture=False)
+        _run(cmd, check=True)
 
     def _queued_resource_status(self) -> TPUStatus:
         result = _run([
@@ -215,13 +241,13 @@ class TPU:
     def _delete_queued_resource(self) -> None:
         logger.info("Deleting queued resource %s...", self._queued_resource_id)
         result = _run([
-            "gcloud", "compute", "tpus", "queued-resources", "delete",
+            "gcloud", "alpha", "compute", "tpus", "queued-resources", "delete",
             self._queued_resource_id,
             f"--zone={self.zone}", "--quiet", "--force"
         ], check=False)
-        if result.returncode != 0 and "NOT_FOUND" not in result.stderr:
-            logger.warning("Failed to delete queued resource %s: %s",
-                           self._queued_resource_id, result.stderr)
+        stderr = result.stderr or ""
+        if result.returncode != 0 and "NOT_FOUND" not in stderr and "not found" not in stderr.lower():
+            logger.warning("Failed to delete queued resource %s", self._queued_resource_id)
 
 
 # ------------------------------------------------------------------

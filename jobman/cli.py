@@ -459,6 +459,13 @@ def submit(script, name, accelerator, zone, tpu_version, max_retries, pricing):
         task_spec["mail_user"] = _validate_email(resolved_mail_user, option_name="#JOBMAN --mail-user")
         task_spec["mail_types"] = resolved_mail_types
         task_spec["mail_config_path"] = str(_ensure_brevo_config())
+        brevo_cfg = load_brevo_config(task_spec["mail_config_path"])
+        if brevo_cfg.get("disabled"):
+            click.echo(
+                "Warning: task requests email notifications, but local Brevo sending is disabled "
+                f"in {task_spec['mail_config_path']}. No emails will be sent.",
+                err=True,
+            )
 
     q = Queue()
     task_id = q.submit(task_spec)
@@ -834,6 +841,8 @@ def _ensure_brevo_config() -> Path:
         raise click.ClickException(
             f"Invalid Brevo config at {cfg_path}: {exc}. Fix or remove it and retry."
         ) from exc
+    if config.get("disabled"):
+        return cfg_path
     api_key = config.get("api_key", "")
     sender_email = config.get("sender_email", "")
     if api_key and sender_email:
@@ -841,6 +850,10 @@ def _ensure_brevo_config() -> Path:
 
     click.echo("Email notifications use Brevo.")
     click.echo(f"Brevo setup guide: {BREVO_DOCS_URL}")
+    if click.confirm("Skip Brevo setup for now and disable local email sending?", default=False):
+        save_brevo_config("", "", str(cfg_path), disabled=True)
+        click.echo(f"Saved disabled Brevo config to {cfg_path}")
+        return cfg_path
     api_key = click.prompt("Enter Brevo API key", hide_input=True).strip()
     sender_email = _validate_email(
         click.prompt("Enter verified Brevo sender email").strip(),

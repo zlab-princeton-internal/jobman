@@ -4,11 +4,50 @@ Lightweight TPU job orchestration. Workers hold TPUs persistently and poll a sha
 
 ## Install
 
+System prerequisites:
+- `tmux` installed on the machine where you run `jobman worker start`
+- Google Cloud SDK (`gcloud`) installed and authenticated
+- TPU APIs enabled in your GCP project, with permissions to create/delete TPU VMs or queued resources
+
 ```bash
 conda create -n jobman-lite python=3.12 -y
 conda activate jobman-lite
 pip install -e .
 ```
+
+Basic checks:
+
+```bash
+tmux -V
+gcloud --version
+gcloud auth list
+gcloud config get-value project
+```
+
+## GCP Auth
+
+Authenticate `gcloud` on the machine where you run `jobman`, then select the project that owns your TPU resources:
+
+```bash
+gcloud auth login
+gcloud auth application-default login
+gcloud config set project <your-gcp-project>
+gcloud config set compute/zone <default-zone>
+```
+
+Useful verification commands:
+
+```bash
+gcloud auth list
+gcloud config list
+gcloud services list --enabled | grep tpu
+```
+
+If TPU creation still fails, check:
+- the active account in `gcloud auth list`
+- the selected project in `gcloud config get-value project`
+- TPU quota in the target zone
+- IAM permissions for TPU VM / queued-resource creation and deletion
 
 ## Script Header Format
 

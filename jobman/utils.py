@@ -48,7 +48,7 @@ def brevo_config_path() -> Path:
     return Path.cwd() / BREVO_CONFIG_FILE
 
 
-def load_brevo_config(path: str | None = None) -> dict[str, str]:
+def load_brevo_config(path: str | None = None) -> dict[str, str | bool]:
     """Load Brevo config from disk. Returns an empty dict if missing."""
     cfg_path = Path(path) if path else brevo_config_path()
     if not cfg_path.exists():
@@ -60,14 +60,28 @@ def load_brevo_config(path: str | None = None) -> dict[str, str]:
     return {
         "api_key": str(data.get("api_key", "")).strip(),
         "sender_email": str(data.get("sender_email", "")).strip(),
+        "disabled": bool(data.get("disabled", False)),
     }
 
 
-def save_brevo_config(api_key: str, sender_email: str, path: str | None = None) -> Path:
+def save_brevo_config(
+    api_key: str,
+    sender_email: str,
+    path: str | None = None,
+    *,
+    disabled: bool = False,
+) -> Path:
     """Persist Brevo config to disk and return the written path."""
     cfg_path = Path(path) if path else brevo_config_path()
     cfg_path.write_text(
-        json.dumps({"api_key": api_key, "sender_email": sender_email}, indent=2) + "\n"
+        json.dumps(
+            {
+                "api_key": api_key,
+                "sender_email": sender_email,
+                "disabled": disabled,
+            },
+            indent=2,
+        ) + "\n"
     )
     try:
         os.chmod(cfg_path, 0o600)
@@ -89,6 +103,8 @@ def send_brevo_email(
         return False
 
     config = load_brevo_config(config_path)
+    if config.get("disabled"):
+        return False
     api_key = config.get("api_key")
     sender_email = config.get("sender_email")
     if not api_key or not sender_email:

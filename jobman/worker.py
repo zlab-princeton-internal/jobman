@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -236,6 +237,105 @@ class Worker:
             "--command", inline,
         ]
 
+    def _format_cmd(self, cmd: list[str]) -> str:
+        return shlex.join(cmd)
+
+    def _extract_process_error(self, result: subprocess.CompletedProcess, fallback: str) -> str:
+        parts = []
+        stdout = (result.stdout or "").strip()
+        stderr = (result.stderr or "").strip()
+        if stderr:
+            parts.append(f"stderr: {stderr}")
+        if stdout:
+            parts.append(f"stdout: {stdout}")
+        return "\n".join(parts) if parts else fallback
+
+    def _log_gcloud_failure(
+        self,
+        *,
+        op: str,
+        cmd: list[str],
+        returncode: int,
+        detail: str,
+        phase: str,
+        worker_index: int,
+        log_handle=None,
+    ) -> None:
+        cmd_str = self._format_cmd(cmd)
+        message = (
+            f"{op} failed on worker {worker_index} with exit code {returncode}\n"
+            f"command: {cmd_str}\n"
+            f"{detail}"
+        )
+        logger.warning("%s", message)
+        self._record_timeline(
+            f"{op.lower()}_failed",
+            phase=phase,
+            worker_index=worker_index,
+            returncode=returncode,
+            error=detail,
+            command=cmd_str,
+        )
+        if log_handle is not None:
+            log_handle.write(f"=== {op} failed on worker {worker_index} ===\n")
+            log_handle.write(f"command: {cmd_str}\n")
+            log_handle.write(detail)
+            if not detail.endswith("\n"):
+                log_handle.write("\n")
+            log_handle.flush()
+
+    def _run_gcloud_scp(
+        self,
+        local_path: str,
+        remote_path: str,
+        worker_index: int,
+        *,
+        phase: str,
+        log_handle=None,
+    ) -> subprocess.CompletedProcess:
+        cmd = self._scp_cmd(local_path, remote_path, worker_index)
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            detail = self._extract_process_error(result, "gcloud scp failed")
+            self._log_gcloud_failure(
+                op="SCP",
+                cmd=cmd,
+                returncode=result.returncode,
+                detail=detail,
+                phase=phase,
+                worker_index=worker_index,
+                log_handle=log_handle,
+            )
+        return result
+
+    def _run_gcloud_ssh(
+        self,
+        worker_index: int,
+        inline: str,
+        *,
+        phase: str,
+        log_handle=None,
+    ) -> subprocess.CompletedProcess:
+        cmd = self._ssh_cmd(worker_index, inline)
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            detail = self._extract_process_error(result, "gcloud ssh failed")
+            self._log_gcloud_failure(
+                op="SSH",
+                cmd=cmd,
+                returncode=result.returncode,
+                detail=detail,
+                phase=phase,
+                worker_index=worker_index,
+                log_handle=log_handle,
+            )
+        return result
+
+    def _popen_gcloud_ssh(self, worker_index: int, inline: str, **kwargs) -> subprocess.Popen:
+        cmd = self._ssh_cmd(worker_index, inline)
+        logger.info("Running SSH command on worker %d: %s", worker_index, self._format_cmd(cmd))
+        return subprocess.Popen(cmd, **kwargs)
+
     def _ensure_bootstrap_ready(self) -> tuple[bool, bool]:
         if self._bootstrap_complete or not self.startup_script:
             return True, False
@@ -290,29 +390,25 @@ class Worker:
 
         try:
             for worker_index in range(num_workers):
-                scp_result = subprocess.run(
-                    self._scp_cmd(self.startup_script, remote_setup, worker_index),
-                    capture_output=True,
-                    text=True,
+                scp_result = self._run_gcloud_scp(
+                    self.startup_script,
+                    remote_setup,
+                    worker_index,
+                    phase="bootstrap",
+                    log_handle=lf,
                 )
                 if scp_result.returncode != 0:
-                    stderr = (scp_result.stderr or "").strip() or "SCP failed"
+                    stderr = self._extract_process_error(scp_result, "SCP failed")
                     results.append((worker_index, False, stderr))
                     record_bootstrap_result(worker_index, False, stderr)
-                    logger.warning("Bootstrap SCP failed on worker %d: %s", worker_index, stderr)
-                    self._record_timeline("scp_failed",
-                                          phase="bootstrap",
-                                          worker_index=worker_index,
-                                          returncode=scp_result.returncode,
-                                          error=stderr)
                     preempted = preempted or self._is_preempted()
                     continue
 
                 setup_inline = f"chmod +x {remote_setup} && bash {remote_setup}"
                 if worker_index == 0:
                     if self.debug:
-                        proc = subprocess.Popen(
-                            self._ssh_cmd(worker_index, setup_inline),
+                        proc = self._popen_gcloud_ssh(
+                            worker_index, setup_inline,
                             stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT,
                             text=True,
@@ -321,36 +417,30 @@ class Worker:
                         tee_thread.start()
                         exit_code = proc.wait()
                         tee_thread.join()
-                        error_text = None
+                        error_text = "See console output above for merged gcloud ssh output." if exit_code != 0 else None
                     else:
-                        proc = subprocess.Popen(
-                            self._ssh_cmd(worker_index, setup_inline),
+                        proc = self._popen_gcloud_ssh(
+                            worker_index, setup_inline,
                             stdout=lf,
                             stderr=subprocess.STDOUT,
                             text=True,
                         )
                         exit_code = proc.wait()
-                        error_text = None
+                        error_text = "See bootstrap.log above for merged gcloud ssh output." if exit_code != 0 else None
                 else:
-                    result = subprocess.run(
-                        self._ssh_cmd(worker_index, setup_inline),
-                        capture_output=True,
-                        text=True,
+                    result = self._run_gcloud_ssh(
+                        worker_index,
+                        setup_inline,
+                        phase="bootstrap",
+                        log_handle=lf,
                     )
                     exit_code = result.returncode
-                    error_text = (result.stderr or result.stdout or "").strip() or None
+                    error_text = self._extract_process_error(result, "gcloud ssh failed") if exit_code != 0 else None
 
                 if exit_code != 0:
                     preempted = preempted or (exit_code == 255 and self._is_preempted())
                     results.append((worker_index, False, error_text))
                     record_bootstrap_result(worker_index, False, error_text)
-                    logger.warning("Bootstrap failed on worker %d with exit code %d",
-                                   worker_index, exit_code)
-                    self._record_timeline("ssh_failed",
-                                          phase="bootstrap",
-                                          worker_index=worker_index,
-                                          returncode=exit_code,
-                                          error=error_text)
                 else:
                     results.append((worker_index, True, None))
                     record_bootstrap_result(worker_index, True, None)
@@ -422,17 +512,11 @@ class Worker:
             return control_state, False
         if self.debug:
             output_buffer: list[str] = []
-            scp_result = subprocess.run(
-                self._scp_cmd(script_path, remote_script, 0),
-                capture_output=False,
-                text=True,
+            scp_result = self._run_gcloud_scp(
+                script_path, remote_script, 0, phase="task"
             )
             if scp_result.returncode != 0:
-                logger.error("SCP failed for task %s", task_id)
-                self._record_timeline("scp_failed",
-                                      phase="task",
-                                      task_id=task_id,
-                                      returncode=scp_result.returncode)
+                logger.error("SCP failed for task %s: %s", task_id, self._extract_process_error(scp_result, "SCP failed"))
                 if self._is_preempted():
                     return "failed", True
                 return "failed", False
@@ -446,8 +530,8 @@ class Worker:
             if control_state is not None:
                 return control_state, False
             inline = f"chmod +x {remote_script} && {env_str} bash {remote_script}"
-            proc = subprocess.Popen(
-                self._ssh_cmd(0, inline),
+            proc = self._popen_gcloud_ssh(
+                0, inline,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -470,23 +554,16 @@ class Worker:
                     f"TPU: {self.worker_id} ({self.zone})\n\n"
                 )
                 lf.flush()
-                scp_result = subprocess.run(
-                    self._scp_cmd(script_path, remote_script, 0),
-                    capture_output=True,
-                    text=True,
+                scp_result = self._run_gcloud_scp(
+                    script_path,
+                    remote_script,
+                    0,
+                    phase="task",
+                    log_handle=lf,
                 )
                 if scp_result.returncode != 0:
-                    logger.error("SCP failed for task %s: %s", task_id, scp_result.stderr)
-                    self._record_timeline("scp_failed",
-                                          phase="task",
-                                          task_id=task_id,
-                                          returncode=scp_result.returncode,
-                                          error=(scp_result.stderr or "").strip() or None)
-                    lf.write("=== SCP failed before remote execution ===\n")
-                    if scp_result.stderr:
-                        lf.write(scp_result.stderr)
-                        if not scp_result.stderr.endswith("\n"):
-                            lf.write("\n")
+                    detail = self._extract_process_error(scp_result, "SCP failed")
+                    logger.error("SCP failed for task %s: %s", task_id, detail)
                     lf.write(f"\n=== Task {task_id} ended at {_now()}, exit_code={scp_result.returncode} ===\n")
                     if self._is_preempted():
                         return "failed", True
@@ -502,8 +579,8 @@ class Worker:
                     lf.write(f"=== Task {task_id} externally {control_state} before remote execution ===\n")
                     return control_state, False
                 inline = f"chmod +x {remote_script} && {env_str} bash {remote_script}"
-                proc = subprocess.Popen(
-                    self._ssh_cmd(0, inline),
+                proc = self._popen_gcloud_ssh(
+                    0, inline,
                     stdout=lf,
                     stderr=subprocess.STDOUT,
                     text=True,
