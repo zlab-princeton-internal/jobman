@@ -3,6 +3,8 @@
 #JOBMAN --zone=__ZONE__
 #JOBMAN --name=__JOB_NAME__
 #JOBMAN --max-retries=3
+#JOBMAN --mail-user=yx3038@nyu.edu
+#JOBMAN --mail-type=BEGIN,END,FAIL
 
 set -euo pipefail
 

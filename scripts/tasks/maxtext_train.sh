@@ -3,6 +3,8 @@
 #JOBMAN --zone=us-central2-b
 #JOBMAN --name=maxtext-train
 #JOBMAN --max-retries=3
+#JOBMAN --mail-user=yx3038@nyu.edu
+#JOBMAN --mail-type=BEGIN,END,FAIL
 
 set -euo pipefail
 

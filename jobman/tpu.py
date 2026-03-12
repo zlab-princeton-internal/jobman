@@ -11,7 +11,7 @@ from .utils import get_logger
 logger = get_logger(__name__)
 
 TPUStatus = Literal["READY", "CREATING", "PREEMPTED", "TERMINATED", "SUSPENDED",
-                    "NOT_FOUND", "UNKNOWN"]
+                    "FAILED", "NOT_FOUND", "UNKNOWN"]
 AllocationMode = Literal["tpu-vm", "queued-resources"]
 Pricing = Literal["spot", "preemptible", "standard"]
 
@@ -49,7 +49,7 @@ class TPU:
     _queued_resource_id: str = field(default="", init=False, repr=False)
 
     def __post_init__(self):
-        self._queued_resource_id = f"qr-{self.name}"
+        self._queued_resource_id = f"{self.name}"
 
     # ------------------------------------------------------------------
     # Public API
@@ -68,6 +68,32 @@ class TPU:
             return self._tpu_vm_status()
         else:
             return self._queued_resource_status()
+
+    def vm_status(self) -> TPUStatus:
+        """Return the TPU VM status directly."""
+        return self._tpu_vm_status()
+
+    def queued_resource_status(self) -> str:
+        """Return the queued resource state directly (e.g. ACTIVE, FAILED, NOT_FOUND)."""
+        if self.mode != "queued-resources":
+            return "-"
+        result = _run([
+            "gcloud", "compute", "tpus", "queued-resources", "describe",
+            self._queued_resource_id,
+            f"--zone={self.zone}", "--format=json"
+        ], check=False)
+        if result.returncode != 0:
+            if "NOT_FOUND" in result.stderr or "not found" in result.stderr.lower():
+                return "NOT_FOUND"
+            return "UNKNOWN"
+        try:
+            info = json.loads(result.stdout)
+            state = info.get("state", {})
+            if isinstance(state, dict):
+                state = state.get("state", "UNKNOWN")
+            return str(state).upper()
+        except (json.JSONDecodeError, KeyError):
+            return "UNKNOWN"
 
     def delete(self) -> None:
         """Delete the TPU VM (and queued resource if applicable)."""
@@ -88,7 +114,7 @@ class TPU:
             if st == "READY":
                 logger.info("TPU %s is READY (%.0fs elapsed)", self.name, elapsed)
                 return
-            if st in ("PREEMPTED", "TERMINATED"):
+            if st in ("PREEMPTED", "TERMINATED", "FAILED"):
                 raise RuntimeError(f"TPU {self.name} entered terminal state: {st}")
             logger.info("TPU %s status=%s, waiting %ds...", self.name, st, interval)
             time.sleep(interval)
@@ -212,6 +238,7 @@ def _normalize_status(state: str) -> TPUStatus:
         "TERMINATED": "TERMINATED",
         "SUSPENDING": "SUSPENDED",
         "SUSPENDED": "SUSPENDED",
+        "FAILED": "FAILED",
         "NOT_FOUND": "NOT_FOUND",
     }
     return mapping.get(state, "UNKNOWN")  # type: ignore[return-value]

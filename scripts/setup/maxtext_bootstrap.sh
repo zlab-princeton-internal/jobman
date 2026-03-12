@@ -152,15 +152,23 @@ mount_bucket_if_needed() {
     return
   fi
 
-  gcsfuse "$@" "$bucket_name" "$mount_path"
+  gcsfuse \
+    --dir-mode=777 \
+    --file-mode=777 \
+    --kernel-list-cache-ttl-secs=-1 \
+    --metadata-cache-ttl-secs=-1 \
+    --stat-cache-max-size-mb=-1 \
+    --type-cache-max-size-mb=-1 \
+    "$@" \
+    "$bucket_name" \
+    "$mount_path"
   log "Mounted bucket $bucket_name at $mount_path"
 }
 
 ensure_primary_bucket_mount() {
   mount_bucket_if_needed \
     "$BUCKET_NAME" \
-    "$PRIMARY_MOUNT_PATH" \
-    --implicit-dirs
+    "$PRIMARY_MOUNT_PATH"
 }
 
 ensure_cached_data_mount() {
@@ -168,7 +176,6 @@ ensure_cached_data_mount() {
   mount_bucket_if_needed \
     "$BUCKET_NAME" \
     "$DATA_MOUNT_PATH" \
-    --implicit-dirs \
     --cache-dir="$RAMDISK_PATH" \
     --metadata-cache-ttl-secs=-1 \
     --stat-cache-max-size-mb=-1 \

@@ -45,6 +45,9 @@ class Queue:
             "tpu_version": task_spec.get("tpu_version", "tpu-ubuntu2204-base"),
             "pricing": task_spec.get("pricing", "spot"),
             "max_retries": task_spec.get("max_retries", 3),
+            "mail_user": task_spec.get("mail_user"),
+            "mail_types": task_spec.get("mail_types", []),
+            "mail_config_path": task_spec.get("mail_config_path"),
             "status": "pending",
             "worker_id": None,
             "submitted": _now(),
@@ -73,13 +76,13 @@ class Queue:
                     return dict(task)
         return None
 
-    def release(self, task_id: str, status: TaskStatus) -> None:
-        """Mark task as done/failed/interrupted. Handles retry logic."""
+    def release(self, task_id: str, status: TaskStatus) -> Optional[dict]:
+        """Mark task as done/failed/interrupted. Handles retry logic and returns updated task."""
         with self._locked() as tasks:
             task = tasks.get(task_id)
             if task is None:
                 logger.warning("release: task %s not found", task_id)
-                return
+                return None
             paused = task.get("status") == "paused"
             if status == "failed":
                 task["fail_count"] = task.get("fail_count", 0) + 1
@@ -91,13 +94,13 @@ class Queue:
                     task["worker_id"] = None
                     task["ended"] = _now()
                     logger.info("Task %s failed while paused; keeping it paused", task_id)
-                    return
+                    return dict(task)
                 else:
                     task["status"] = "pending"
                     task["worker_id"] = None
                     logger.info("Task %s failed (%d/%d), re-queuing",
                                 task_id, task["fail_count"], task["max_retries"])
-                    return
+                    return dict(task)
             elif status == "interrupted":
                 # Re-queue without incrementing fail_count unless paused.
                 task["status"] = "paused" if paused else "pending"
@@ -105,11 +108,12 @@ class Queue:
                 task["started"] = None
                 logger.info("Task %s interrupted, %s",
                             task_id, "keeping paused" if paused else "re-queuing")
-                return
+                return dict(task)
             else:
                 task["status"] = status
             task["ended"] = _now()
             task["worker_id"] = None
+            return dict(task)
 
     def list(self) -> list:
         """Return all tasks sorted by submission time."""

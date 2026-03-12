@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 
 from .queue import Queue
 from .tpu import TPU, AllocationMode, Pricing, DEFAULT_TPU_VERSION
-from .utils import get_logger, jobman_dir, jobman_log_dir
+from .utils import get_logger, jobman_dir, jobman_log_dir, send_brevo_email
 
 logger = get_logger(__name__)
 _RETRYABLE_FAILURE_PATTERN = "Main command finished with errors, check the logs located in"
@@ -35,6 +35,7 @@ def _tee_to_stdout(proc, buffer: list[str] | None = None) -> None:
 
 class Worker:
     _TASK_CONTROL_POLL_INTERVAL = 5
+    _LOOP_ERROR_SLEEP_SECS = 10
 
     def __init__(
         self,
@@ -109,6 +110,7 @@ class Worker:
                     self.worker_id, self.accelerator, self.zone)
         try:
             while True:
+                task: dict | None = None
                 try:
                     self._ensure_tpu_ready()
                     bootstrap_success, bootstrap_preempted = self._ensure_bootstrap_ready()
@@ -126,6 +128,7 @@ class Worker:
                         time.sleep(30)
                         continue
 
+                    self._send_task_notification(task, "BEGIN")
                     outcome, preempted = self._run_task(task)
 
                     if outcome == "deleted":
@@ -138,13 +141,18 @@ class Worker:
                         self.queue.release(task["id"], "interrupted")
                         self._handle_preemption()
                     else:
-                        self.queue.release(task["id"], "done" if outcome == "done" else "failed")
+                        final_task = self.queue.release(task["id"], "done" if outcome == "done" else "failed")
+                        if outcome == "done":
+                            self._send_task_notification(final_task or task, "END")
+                        elif final_task is not None and final_task.get("status") == "failed":
+                            self._send_task_notification(final_task, "FAIL")
 
                 except KeyboardInterrupt:
                     raise
                 except Exception as e:
                     logger.exception("Unhandled error in worker loop: %s", e)
-                    time.sleep(10)
+                    self._recover_after_loop_exception(task, e)
+                    time.sleep(self._LOOP_ERROR_SLEEP_SECS)
         except KeyboardInterrupt:
             logger.info("Worker %s shutting down", self.worker_id)
         finally:
@@ -154,6 +162,24 @@ class Worker:
     # ------------------------------------------------------------------
     # TPU management
     # ------------------------------------------------------------------
+
+    def _recover_after_loop_exception(self, task: dict | None, exc: Exception) -> None:
+        """Best-effort recovery after an unexpected loop exception."""
+        self._record_timeline("worker_loop_exception", error=str(exc))
+        if task is None:
+            return
+
+        task_id = task["id"]
+        try:
+            if self._is_preempted():
+                self.queue.release(task_id, "interrupted")
+                self._handle_preemption()
+            else:
+                final_task = self.queue.release(task_id, "failed")
+                if final_task is not None and final_task.get("status") == "failed":
+                    self._send_task_notification(final_task, "FAIL")
+        except Exception:
+            logger.exception("Failed to recover task %s after loop exception", task_id)
 
     def _ensure_tpu_ready(self) -> None:
         status = self.tpu.status()
@@ -249,6 +275,19 @@ class Worker:
 
         results: list[tuple[int, bool, str | None]] = []
         preempted = False
+
+        def record_bootstrap_result(worker_index: int, ok: bool, error_text: str | None = None) -> None:
+            status = "ok" if ok else "failed"
+            if lf is not None:
+                lf.write(f"worker {worker_index}: {status}\n")
+                if error_text:
+                    lf.write(f"  detail: {error_text}\n")
+                lf.flush()
+            elif self.debug:
+                print(f"worker {worker_index}: {status}")
+                if error_text:
+                    print(f"  detail: {error_text}")
+
         try:
             for worker_index in range(num_workers):
                 scp_result = subprocess.run(
@@ -259,6 +298,7 @@ class Worker:
                 if scp_result.returncode != 0:
                     stderr = (scp_result.stderr or "").strip() or "SCP failed"
                     results.append((worker_index, False, stderr))
+                    record_bootstrap_result(worker_index, False, stderr)
                     logger.warning("Bootstrap SCP failed on worker %d: %s", worker_index, stderr)
                     self._record_timeline("scp_failed",
                                           phase="bootstrap",
@@ -303,6 +343,7 @@ class Worker:
                 if exit_code != 0:
                     preempted = preempted or (exit_code == 255 and self._is_preempted())
                     results.append((worker_index, False, error_text))
+                    record_bootstrap_result(worker_index, False, error_text)
                     logger.warning("Bootstrap failed on worker %d with exit code %d",
                                    worker_index, exit_code)
                     self._record_timeline("ssh_failed",
@@ -312,22 +353,15 @@ class Worker:
                                           error=error_text)
                 else:
                     results.append((worker_index, True, None))
+                    record_bootstrap_result(worker_index, True, None)
 
             if lf is not None:
                 lf.write("\n=== Bootstrap summary ===\n")
-                for worker_index, ok, error_text in results:
-                    status = "ok" if ok else "failed"
-                    lf.write(f"worker {worker_index}: {status}\n")
-                    if not ok and worker_index != 0 and error_text:
-                        lf.write(f"  detail: {error_text}\n")
                 success = all(ok for _, ok, _ in results)
                 lf.write(f"\n=== Bootstrap ended at {_now()}, success={success} ===\n\n")
                 lf.flush()
             elif self.debug:
                 print("=== Bootstrap summary ===")
-                for worker_index, ok, _ in results:
-                    status = "ok" if ok else "failed"
-                    print(f"worker {worker_index}: {status}")
                 print("")
 
             success = all(ok for _, ok, _ in results)
@@ -339,6 +373,39 @@ class Worker:
     # ------------------------------------------------------------------
     # Task execution
     # ------------------------------------------------------------------
+
+    def _send_task_notification(self, task: dict, event: str) -> None:
+        mail_user = task.get("mail_user")
+        mail_types = {str(v).upper() for v in task.get("mail_types", [])}
+        if not mail_user or event not in mail_types:
+            return
+
+        subject = f"[jobman-lite] {event} {task['id']} ({task.get('name', task['id'])})"
+        body = "\n".join([
+            f"event: {event}",
+            f"task_id: {task['id']}",
+            f"name: {task.get('name', task['id'])}",
+            f"status: {task.get('status', '-')}",
+            f"worker: {self.worker_id}",
+            f"accelerator: {task.get('accelerator', self.accelerator)}",
+            f"zone: {task.get('zone', self.zone)}",
+            f"run_count: {task.get('run_count', 0)}",
+            f"submitted: {task.get('submitted') or '-'}",
+            f"started: {task.get('started') or '-'}",
+            f"ended: {task.get('ended') or '-'}",
+        ])
+        try:
+            sent = send_brevo_email(
+                recipient=mail_user,
+                subject=subject,
+                text_content=body,
+                config_path=task.get("mail_config_path"),
+            )
+        except Exception as exc:
+            logger.warning("Failed to send %s email for task %s: %s", event, task["id"], exc)
+            return
+        if not sent:
+            logger.warning("Email notification %s for task %s was not sent", event, task["id"])
 
     def _run_task(self, task: dict) -> tuple[str, bool]:
         """Run a task. Returns (outcome, preempted)."""
@@ -520,9 +587,9 @@ class Worker:
 
     def _is_preempted(self) -> bool:
         status = self.tpu.status()
-        if status in ("PREEMPTED", "TERMINATED", "NOT_FOUND", "SUSPENDED"):
+        if status in ("PREEMPTED", "TERMINATED", "NOT_FOUND", "SUSPENDED", "FAILED"):
             self._record_timeline("tpu_unavailable", status=status)
-        return status in ("PREEMPTED", "TERMINATED", "NOT_FOUND", "SUSPENDED")
+        return status in ("PREEMPTED", "TERMINATED", "NOT_FOUND", "SUSPENDED", "FAILED")
 
     def _record_timeline(self, event: str, **fields) -> None:
         entry = {"time": _now(), "event": event, "worker_id": self.worker_id}
