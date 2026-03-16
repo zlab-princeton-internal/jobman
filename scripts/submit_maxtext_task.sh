@@ -7,14 +7,14 @@ TMP_DIR="${SCRIPT_DIR}/.tmp_submissions"
 
 # Edit these arrays directly.
 ACCELS=(
-  # "v4-128"
-  "v6e-128"
+  "v4-128"
+  # "v6e-128"
 )
 
 ZONES=(
-  # "us-central2-b"
-  "us-central1-b"
-  "us-east5-b"
+  "us-central2-b"
+  # "us-central1-b"
+  # "us-east5-b"
 )
 
 MODEL_TYPES=(
@@ -23,9 +23,9 @@ MODEL_TYPES=(
 )
 
 PRETRAINS=(
-  # "scratch"
+  "scratch"
   # "meta"
-  "l200"
+  # "l200"
 )
 
 LENGTHS=(

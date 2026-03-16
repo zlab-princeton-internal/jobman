@@ -40,9 +40,44 @@ def _tee_to_stdout(proc, buffer: list[str] | None = None) -> None:
         sys.stdout.flush()
 
 
+class _OutputActivityTracker:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._last_output_time = time.monotonic()
+
+    def mark_output(self) -> None:
+        with self._lock:
+            self._last_output_time = time.monotonic()
+
+    def seconds_since_output(self) -> float:
+        with self._lock:
+            return time.monotonic() - self._last_output_time
+
+
+def _stream_process_output(
+    proc: subprocess.Popen,
+    *,
+    target=None,
+    buffer: list[str] | None = None,
+    activity_tracker: _OutputActivityTracker | None = None,
+) -> None:
+    """Drain proc.stdout, teeing into a target and tracking last output time."""
+    if proc.stdout is None:
+        return
+    for line in proc.stdout:
+        if activity_tracker is not None:
+            activity_tracker.mark_output()
+        if buffer is not None:
+            buffer.append(line)
+        if target is not None:
+            target.write(line)
+            target.flush()
+
+
 class Worker:
     _TASK_CONTROL_POLL_INTERVAL = 5
     _LOOP_ERROR_SLEEP_SECS = 10
+    _DEFAULT_TASK_INACTIVITY_TIMEOUT_SECS = 600
 
     def __init__(
         self,
@@ -75,6 +110,7 @@ class Worker:
         self._log_dir = os.path.join(jobman_log_dir(), "workers", tpu_name)
         self._timeline_path = os.path.join(self._log_dir, "timeline.jsonl")
         self._bootstrap_complete = False
+        self._task_inactivity_timeout_secs = self._load_task_inactivity_timeout_secs()
         os.makedirs(self._log_dir, exist_ok=True)
         if self.startup_script:
             self._snapshot_startup_script()
@@ -90,6 +126,23 @@ class Worker:
             for name in list(logging.Logger.manager.loggerDict):
                 if name.startswith("jobman"):
                     logging.getLogger(name).setLevel(logging.DEBUG)
+
+    def _load_task_inactivity_timeout_secs(self) -> int | None:
+        raw = os.environ.get("JOBMAN_TASK_INACTIVITY_TIMEOUT_SECS")
+        if raw is None:
+            return self._DEFAULT_TASK_INACTIVITY_TIMEOUT_SECS
+        try:
+            value = int(raw)
+        except ValueError:
+            logger.warning(
+                "Invalid JOBMAN_TASK_INACTIVITY_TIMEOUT_SECS=%r; using default %s",
+                raw,
+                self._DEFAULT_TASK_INACTIVITY_TIMEOUT_SECS,
+            )
+            return self._DEFAULT_TASK_INACTIVITY_TIMEOUT_SECS
+        if value <= 0:
+            return None
+        return value
 
     # ------------------------------------------------------------------
     # Main loop
@@ -623,6 +676,7 @@ class Worker:
             return control_state, False
         if self.debug:
             output_buffer: list[str] = []
+            activity_tracker = _OutputActivityTracker()
             scp_result = self._run_gcloud_scp(
                 script_path, remote_script, 0, phase="task"
             )
@@ -647,11 +701,24 @@ class Worker:
                 stderr=subprocess.STDOUT,
                 text=True,
             )
-            tee_thread = threading.Thread(target=_tee_to_stdout, args=(proc, output_buffer), daemon=True)
+            tee_thread = threading.Thread(
+                target=_stream_process_output,
+                kwargs={
+                    "proc": proc,
+                    "target": sys.stdout,
+                    "buffer": output_buffer,
+                    "activity_tracker": activity_tracker,
+                },
+                daemon=True,
+            )
             tee_thread.start()
-            exit_code, control_state = self._wait_for_task_process(proc, task_id)
+            exit_code, control_state = self._wait_for_task_process(proc, task_id, activity_tracker)
             tee_thread.join()
             if control_state is not None:
+                if control_state == "failed":
+                    if self._is_preempted():
+                        return "failed", True
+                    return "failed", False
                 return control_state, False
         else:
             log_dir = os.path.join(self._task_log_root, task_id)
@@ -690,15 +757,32 @@ class Worker:
                     lf.write(f"=== Task {task_id} externally {control_state} before remote execution ===\n")
                     return control_state, False
                 inline = f"chmod +x {remote_script} && {env_str} bash {remote_script}"
+                activity_tracker = _OutputActivityTracker()
                 proc = self._popen_gcloud_ssh(
                     0, inline,
-                    stdout=lf,
+                    stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     text=True,
                 )
-                exit_code, control_state = self._wait_for_task_process(proc, task_id)
+                tee_thread = threading.Thread(
+                    target=_stream_process_output,
+                    kwargs={
+                        "proc": proc,
+                        "target": lf,
+                        "activity_tracker": activity_tracker,
+                    },
+                    daemon=True,
+                )
+                tee_thread.start()
+                exit_code, control_state = self._wait_for_task_process(proc, task_id, activity_tracker)
+                tee_thread.join()
                 lf.write(f"\n=== Task {task_id} ended at {_now()}, exit_code={exit_code} ===\n")
                 if control_state is not None:
+                    if control_state == "failed":
+                        lf.write(f"=== Task {task_id} terminated due to inactivity timeout ===\n")
+                        if self._is_preempted():
+                            return "failed", True
+                        return "failed", False
                     lf.write(f"=== Task {task_id} externally {control_state} during execution ===\n")
                     return control_state, False
 
@@ -761,7 +845,12 @@ class Worker:
             proc.kill()
             return proc.wait()
 
-    def _wait_for_task_process(self, proc: subprocess.Popen, task_id: str) -> tuple[int, str | None]:
+    def _wait_for_task_process(
+        self,
+        proc: subprocess.Popen,
+        task_id: str,
+        activity_tracker: _OutputActivityTracker | None = None,
+    ) -> tuple[int, str | None]:
         while True:
             exit_code = proc.poll()
             if exit_code is not None:
@@ -770,6 +859,23 @@ class Worker:
             if control_state is not None:
                 exit_code = self._terminate_task_process(proc, task_id, control_state)
                 return exit_code, control_state
+            if (
+                activity_tracker is not None
+                and self._task_inactivity_timeout_secs is not None
+                and activity_tracker.seconds_since_output() > self._task_inactivity_timeout_secs
+            ):
+                logger.warning(
+                    "Task %s had no new output for %ss; terminating remote process",
+                    task_id,
+                    self._task_inactivity_timeout_secs,
+                )
+                self._record_timeline(
+                    "task_inactivity_timeout",
+                    task_id=task_id,
+                    timeout_secs=self._task_inactivity_timeout_secs,
+                )
+                exit_code = self._terminate_task_process(proc, task_id, "inactivity_timeout")
+                return exit_code, "failed"
             time.sleep(self._TASK_CONTROL_POLL_INTERVAL)
 
     def _has_retryable_failure_pattern(self, text: str = "", log_file: str = "") -> bool:

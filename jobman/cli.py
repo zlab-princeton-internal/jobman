@@ -14,6 +14,9 @@ from pathlib import Path
 
 import click
 
+# from analytics import availability as analytics_availability
+# from analytics import cost as analytics_cost
+# from analytics import storage as analytics_storage
 from .queue import Queue
 from .tpu import TPU, DEFAULT_TPU_VERSION, resolve_tpu_version
 from .utils import (
@@ -54,6 +57,29 @@ def run_tests():
     from .test_runner import run_all_tests
 
     sys.exit(run_all_tests())
+
+
+@cli.group()
+def analytics():
+    """Historical analytics and reporting."""
+
+
+@analytics.command("availability")
+def analytics_availability_cmd():
+    """Show availability analytics."""
+    click.echo(analytics_availability.summary_text())
+
+
+@analytics.command("cost")
+def analytics_cost_cmd():
+    """Show cost analytics."""
+    click.echo(analytics_cost.summary_text())
+
+
+@analytics.command("storage")
+def analytics_storage_cmd():
+    """Show storage analytics."""
+    click.echo(analytics_storage.summary_text())
 
 
 # ---------------------------------------------------------------------------

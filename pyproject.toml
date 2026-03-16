@@ -17,4 +17,4 @@ jobman = "jobman.cli:cli"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["jobman*"]
+include = ["jobman*", "analytics*"]

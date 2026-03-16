@@ -24,13 +24,28 @@ class FakePopen:
         self._target = stdout
         self._lines = lines or []
         self.returncode = returncode
+        self._terminated = False
+        self._killed = False
+        self._poll_count = 0
 
-    def wait(self):
+    def wait(self, timeout=None):
         if self._target is not None:
             for line in self._lines:
                 self._target.write(line)
                 self._target.flush()
         return self.returncode
+
+    def poll(self):
+        if self._terminated or self._killed:
+            return self.returncode
+        self._poll_count += 1
+        return self.returncode if self._poll_count > 1 else None
+
+    def terminate(self):
+        self._terminated = True
+
+    def kill(self):
+        self._killed = True
 
 
 class BlockingFakePopen(FakePopen):
@@ -38,9 +53,19 @@ class BlockingFakePopen(FakePopen):
         super().__init__(*args, **kwargs)
         self._release_event = release_event
 
-    def wait(self):
+    def wait(self, timeout=None):
         self._release_event.wait(timeout=5)
-        return super().wait()
+        return super().wait(timeout=timeout)
+
+
+class SilentFakePopen(FakePopen):
+    def __init__(self, *args, returncode=124, **kwargs):
+        super().__init__(*args, lines=[], returncode=returncode, **kwargs)
+
+    def poll(self):
+        if self._terminated or self._killed:
+            return self.returncode
+        return None
 
 
 class WorkerTests(unittest.TestCase):
@@ -276,7 +301,7 @@ class WorkerTests(unittest.TestCase):
 
         with patch("jobman.worker.subprocess.run", side_effect=run_side_effect), patch(
             "jobman.worker.subprocess.Popen", side_effect=popen_side_effect
-        ):
+        ), patch.object(worker, "_task_control_state", return_value=None):
             success, preempted = worker._run_task(task)
 
         self.assertTrue(success)
@@ -322,6 +347,52 @@ class WorkerTests(unittest.TestCase):
 
         self.assertEqual(outcome, "failed")
         self.assertTrue(preempted)
+
+    def test_run_task_fails_after_output_inactivity_timeout(self):
+        worker = self._make_worker()
+        worker.tpu = Mock()
+        worker.tpu.get_num_workers.return_value = 2
+        worker.tpu.status.return_value = "READY"
+        worker._task_inactivity_timeout_secs = 1
+        worker._TASK_CONTROL_POLL_INTERVAL = 0
+
+        task_script = self.state_dir / "train.sh"
+        task_script.write_text("#!/bin/bash\necho train\n")
+        task = {"id": "task_silent", "name": "train", "script": str(task_script), "run_count": 1}
+
+        def run_side_effect(cmd, capture_output=True, text=True):
+            command = " ".join(cmd)
+            if "scp" in command:
+                return SimpleNamespace(returncode=0, stderr="", stdout="")
+            raise AssertionError(f"unexpected subprocess.run call: {command}")
+
+        def popen_side_effect(cmd, stdout=None, stderr=None, text=None):
+            command = " ".join(cmd)
+            if "JOBMAN_TPU_NAME=" in command and "jobman_task_silent.sh" in command:
+                return SilentFakePopen(cmd, stdout=stdout, returncode=124)
+            raise AssertionError(f"unexpected subprocess.Popen call: {command}")
+
+        monotonic_values = iter([0.0, 2.0])
+        timeline = []
+
+        with patch("jobman.worker.subprocess.run", side_effect=run_side_effect), patch(
+            "jobman.worker.subprocess.Popen", side_effect=popen_side_effect
+        ), patch("jobman.worker.time.monotonic", side_effect=lambda: next(monotonic_values)), patch.object(
+            worker, "_task_control_state", return_value=None
+        ), patch.object(
+            worker, "_record_timeline", side_effect=lambda event, **fields: timeline.append((event, fields))
+        ):
+            outcome, preempted = worker._run_task(task)
+
+        self.assertEqual(outcome, "failed")
+        self.assertFalse(preempted)
+        self.assertIn(
+            ("task_inactivity_timeout", {"task_id": "task_silent", "timeout_secs": 1}),
+            timeline,
+        )
+        log_file = Path(worker._task_log_root) / "task_silent" / "run_1_worker_00001.log"
+        content = log_file.read_text()
+        self.assertIn("terminated due to inactivity timeout", content)
 
     def test_has_worker_disconnect_pattern_matches_broken_pipe(self):
         worker = self._make_worker()

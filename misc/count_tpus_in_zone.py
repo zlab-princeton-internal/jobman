@@ -120,7 +120,7 @@ def count_zone(zone: str):
             counts["provisioning"] += cores
         elif state in RUNNING_STATES:
             counts["running"] += cores
-        elif state == "SUSPENDED":
+        elif state in ["SUSPENDING", "SUSPENDED"]:
             counts["suspended"] += cores
         elif state == "FAILED":
             counts["failed"] += cores

@@ -74,6 +74,12 @@ class CLITests(unittest.TestCase):
         self.assertIn(f"Script            : {task['script']}", show_result.output)
         self.assertNotIn("Source script", show_result.output)
 
+    def test_analytics_availability_command_exists(self):
+        result = self.runner.invoke(cli, ["analytics", "availability"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("Availability analytics is not implemented yet.", result.output)
+
     def test_submit_rejects_invalid_accelerator_in_script(self):
         script = self.state_dir / "bad_accel.sh"
         script.write_text(
