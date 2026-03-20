@@ -10,7 +10,7 @@ set -euo pipefail
 
 MAXTEXT_REPO_URL="https://github.com/Zephyr271828/maxtext.git"
 MAXTEXT_BRANCH="test_new"
-MAXTEXT_DIR="$HOME/maxtext"
+MAXTEXT_DIR="/maxtext"
 VENV_NAME="maxtext_env"
 VENV_DIR="$HOME/.venvs/$VENV_NAME"
 LOG_PREFIX="[jobman-task]"

@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 
 from .queue import Queue
 from .tpu import TPU, AllocationMode, Pricing, DEFAULT_TPU_VERSION
-from .utils import get_logger, jobman_dir, jobman_log_dir, send_brevo_email
+from .utils import dir_lock, get_logger, jobman_dir, jobman_log_dir, send_brevo_email
 
 logger = get_logger(__name__)
 _RETRYABLE_FAILURE_PATTERN = "Main command finished with errors, check the logs located in"
@@ -89,11 +89,13 @@ class Worker:
         allocation_mode: AllocationMode = "tpu-vm",
         startup_script: str | None = None,
         debug: bool = False,
+        ssh_user: str | None = None,
     ):
         self.worker_id = tpu_name
         self.accelerator = accelerator
         self.zone = zone
         self.debug = debug
+        self.ssh_user = ssh_user
         self.startup_script = startup_script
         self._startup_script_snapshot = startup_script
         self.tpu = TPU(
@@ -167,11 +169,15 @@ class Worker:
 
     def run(self) -> None:
         self._register(status="running")
-        self._record_timeline("worker_started",
-                              accelerator=self.accelerator,
-                              zone=self.zone,
-                              pricing=self.tpu.pricing,
-                              allocation_mode=self.tpu.mode)
+        timeline_fields = dict(
+            accelerator=self.accelerator,
+            zone=self.zone,
+            pricing=self.tpu.pricing,
+            allocation_mode=self.tpu.mode,
+        )
+        if self.ssh_user:
+            timeline_fields["ssh_user"] = self.ssh_user
+        self._record_timeline("worker_started", **timeline_fields)
         logger.info("Worker %s started (accelerator=%s, zone=%s)",
                     self.worker_id, self.accelerator, self.zone)
         try:
@@ -257,6 +263,13 @@ class Worker:
             self._record_timeline("tpu_delete_requested", reason=f"status={status}")
             self.tpu.delete()
             self._record_timeline("tpu_deleted", reason=f"status={status}")
+            # Verify the resource is actually gone before creating a new one
+            post_delete_status = self.tpu.status()
+            if post_delete_status not in ("NOT_FOUND", "UNKNOWN"):
+                raise RuntimeError(
+                    f"TPU {self.worker_id} still exists after delete "
+                    f"(status={post_delete_status}); refusing to create duplicate"
+                )
         if status != "CREATING":
             self._record_timeline("tpu_requesting")
             self.tpu.request()
@@ -275,11 +288,16 @@ class Worker:
             logger.warning("Error deleting preempted TPU: %s", e)
             self._record_timeline("tpu_delete_failed", reason="preemption_recovery", error=str(e))
 
+    def _ssh_target(self) -> str:
+        if self.ssh_user:
+            return f"{self.ssh_user}@{self.worker_id}"
+        return self.worker_id
+
     def _scp_cmd(self, local_path: str, remote_path: str, worker_index: int) -> list[str]:
         return [
             "gcloud", "compute", "tpus", "tpu-vm", "scp",
             local_path,
-            f"{self.worker_id}:{remote_path}",
+            f"{self._ssh_target()}:{remote_path}",
             f"--zone={self.zone}",
             f"--worker={worker_index}",
             "--scp-flag=-o ConnectionAttempts=2",
@@ -291,7 +309,7 @@ class Worker:
 
     def _ssh_cmd(self, worker_index: int, inline: str) -> list[str]:
         return [
-            "gcloud", "compute", "tpus", "tpu-vm", "ssh", self.worker_id,
+            "gcloud", "compute", "tpus", "tpu-vm", "ssh", self._ssh_target(),
             f"--zone={self.zone}",
             f"--worker={worker_index}",
             "--ssh-flag=-o ConnectionAttempts=2",
@@ -923,32 +941,36 @@ class Worker:
 
     def _register(self, status: str = "running") -> None:
         registry_path = os.path.join(self._state_dir, "workers.json")
+        lock_dir = registry_path + ".d.lock"
         os.makedirs(self._state_dir, exist_ok=True)
 
-        # Read existing
-        registry: dict = {}
-        if os.path.exists(registry_path):
-            try:
-                with open(registry_path) as f:
-                    registry = json.load(f)
-            except (json.JSONDecodeError, OSError):
-                pass
+        with dir_lock(lock_dir):
+            registry: dict = {}
+            if os.path.exists(registry_path):
+                try:
+                    with open(registry_path) as f:
+                        registry = json.load(f)
+                except (json.JSONDecodeError, OSError):
+                    pass
 
-        registry[self.worker_id] = {
-            "worker_id": self.worker_id,
-            "tpu_name": self.worker_id,
-            "accelerator": self.accelerator,
-            "zone": self.zone,
-            "tpu_version": self.tpu.version,
-            "pricing": self.tpu.pricing,
-            "mode": self.tpu.mode,
-            "startup_script": self._display_startup_script(),
-            "status": status,
-            "registered": _now(),
-            "pid": os.getpid(),
-        }
+            entry = {
+                "worker_id": self.worker_id,
+                "tpu_name": self.worker_id,
+                "accelerator": self.accelerator,
+                "zone": self.zone,
+                "tpu_version": self.tpu.version,
+                "pricing": self.tpu.pricing,
+                "mode": self.tpu.mode,
+                "startup_script": self._display_startup_script(),
+                "status": status,
+                "registered": _now(),
+                "pid": os.getpid(),
+            }
+            if self.ssh_user:
+                entry["ssh_user"] = self.ssh_user
+            registry[self.worker_id] = entry
 
-        tmp = registry_path + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump(registry, f, indent=2)
-        os.replace(tmp, registry_path)
+            tmp = registry_path + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(registry, f, indent=2)
+            os.replace(tmp, registry_path)

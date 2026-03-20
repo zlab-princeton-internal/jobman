@@ -1,7 +1,10 @@
 import json
 import logging
 import os
+import shutil
 import sys
+import time
+from contextlib import contextmanager
 from pathlib import Path
 from urllib import error as urllib_error
 from urllib import request as urllib_request
@@ -35,12 +38,50 @@ def get_logger(name: str, log_file: "str | None" = None, level: int = logging.IN
 
 def jobman_dir() -> str:
     """Return the jobman state directory."""
-    return os.environ.get("JOBMAN_DIR", "/scratch/yx3038/pruning/jobman-lite")
+    return os.environ.get("JOBMAN_DIR", "/mnt/weka/home/yucheng/yufeng/jobman-lite")
 
 
 def jobman_log_dir() -> str:
     """Return the jobman log directory."""
     return os.environ.get("JOBMAN_LOG_DIR", os.path.join(jobman_dir(), "logs"))
+
+
+@contextmanager
+def dir_lock(lock_dir: str, timeout: float = 60, stale_timeout: float = 300):
+    """Cross-process lock using mkdir (atomic on local and distributed filesystems).
+
+    Uses os.mkdir which is atomic even on NFS/WekaFS, unlike fcntl.flock.
+    """
+    pid_file = os.path.join(lock_dir, "pid")
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            os.mkdir(lock_dir)
+            # Write PID for stale lock detection
+            try:
+                with open(pid_file, "w") as f:
+                    f.write(str(os.getpid()))
+            except OSError:
+                pass
+            break
+        except FileExistsError:
+            # Check for stale lock
+            try:
+                lock_mtime = os.path.getmtime(lock_dir)
+                if (time.time() - lock_mtime) > stale_timeout:
+                    shutil.rmtree(lock_dir, ignore_errors=True)
+                    continue
+            except OSError:
+                pass
+            if time.monotonic() >= deadline:
+                # Force-break the lock as last resort
+                shutil.rmtree(lock_dir, ignore_errors=True)
+                continue
+            time.sleep(0.05)
+    try:
+        yield
+    finally:
+        shutil.rmtree(lock_dir, ignore_errors=True)
 
 
 def brevo_config_path() -> Path:

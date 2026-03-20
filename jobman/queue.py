@@ -1,6 +1,5 @@
-"""File-based task queue with fcntl locking for atomicity."""
+"""File-based task queue with directory-based locking for atomicity."""
 
-import fcntl
 import json
 import os
 import shutil
@@ -10,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional, List
 
-from .utils import get_logger, jobman_dir, jobman_log_dir
+from .utils import dir_lock, get_logger, jobman_dir, jobman_log_dir
 
 logger = get_logger(__name__)
 
@@ -204,12 +203,8 @@ class Queue:
     @contextmanager
     def _locked(self):
         """Context manager that yields the mutable tasks dict with file lock held."""
-        lock_path = self._path + ".lock"
-        with open(lock_path, "w") as lf:
-            fcntl.flock(lf, fcntl.LOCK_EX)
-            try:
-                tasks = self._read()
-                yield tasks
-                self._write(tasks)
-            finally:
-                fcntl.flock(lf, fcntl.LOCK_UN)
+        lock_dir = self._path + ".d.lock"
+        with dir_lock(lock_dir):
+            tasks = self._read()
+            yield tasks
+            self._write(tasks)

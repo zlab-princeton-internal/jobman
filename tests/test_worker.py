@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import logging
+import multiprocessing
 import os
 import sys
 import tempfile
@@ -15,6 +17,17 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from jobman.worker import Worker
+
+
+def _register_worker_once(state_dir: str, worker_id: str) -> None:
+    os.environ["JOBMAN_DIR"] = state_dir
+    worker = Worker(
+        tpu_name=worker_id,
+        accelerator="v4-8",
+        zone="us-central2-b",
+        allocation_mode="tpu-vm",
+    )
+    worker._register()
 
 
 class FakePopen:
@@ -106,13 +119,32 @@ class WorkerTests(unittest.TestCase):
     def test_ensure_tpu_ready_recreates_preempted_tpu(self):
         worker = self._make_worker()
         worker.tpu = Mock()
-        worker.tpu.status.return_value = "PREEMPTED"
+        # First call returns PREEMPTED (triggers delete+request),
+        # second call (post-delete verification) returns NOT_FOUND.
+        worker.tpu.status.side_effect = ["PREEMPTED", "NOT_FOUND"]
 
         worker._ensure_tpu_ready()
 
         worker.tpu.delete.assert_called_once()
         worker.tpu.request.assert_called_once()
         worker.tpu.wait_ready.assert_called_once()
+
+    def test_register_preserves_all_workers_across_processes(self):
+        ctx = multiprocessing.get_context("fork")
+        worker_ids = [f"worker-{idx}" for idx in range(6)]
+        processes = [
+            ctx.Process(target=_register_worker_once, args=(str(self.state_dir), worker_id))
+            for worker_id in worker_ids
+        ]
+
+        for process in processes:
+            process.start()
+        for process in processes:
+            process.join(timeout=10)
+            self.assertEqual(process.exitcode, 0)
+
+        registry = json.loads((self.state_dir / "workers.json").read_text())
+        self.assertEqual(set(registry), set(worker_ids))
 
     def test_run_bootstrap_logs_summary(self):
         setup_script = self.state_dir / "setup.sh"

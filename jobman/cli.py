@@ -22,6 +22,7 @@ from .tpu import TPU, DEFAULT_TPU_VERSION, resolve_tpu_version
 from .utils import (
     BREVO_DOCS_URL,
     brevo_config_path,
+    dir_lock,
     get_logger,
     jobman_dir,
     jobman_log_dir,
@@ -99,9 +100,10 @@ def worker():
 @click.option("--allocation-mode", "-m", default="queued-resources", type=MODE_CHOICES, show_default=True)
 @click.option("--startup-script", "-s", type=click.Path(exists=True, dir_okay=False, path_type=Path),
               default=None, help="Optional bootstrap script to run on all TPU hosts before claiming tasks")
+@click.option("--ssh-user", "-u", default="yx3038", help="SSH username for connecting to TPU VMs (default: gcloud default)")
 @click.option("--debug", is_flag=True, default=False,
               help="Run interactively in the foreground with live output and no log files")
-def worker_start(accelerator, zone, tpu_name, pricing, allocation_mode, startup_script, debug):
+def worker_start(accelerator, zone, tpu_name, pricing, allocation_mode, startup_script, ssh_user, debug):
     """Start a worker in a background tmux session."""
     _ensure_owner_name()
     if not tpu_name:
@@ -124,6 +126,8 @@ def worker_start(accelerator, zone, tpu_name, pricing, allocation_mode, startup_
     ]
     if startup_script:
         args.append(f"--startup-script={startup_script}")
+    if ssh_user:
+        args.append(f"--ssh-user={ssh_user}")
     if debug:
         args.append("--debug")
 
@@ -181,7 +185,6 @@ def worker_stop(worker_refs, stop_all, accelerator, zone):
             click.echo(f"No tmux session '{session}' found.", err=True)
             failed = True
             continue
-        _update_worker_status(tpu_name, "stopped")
         click.echo(f"Worker '{tpu_name}' stopped.")
     if failed:
         sys.exit(1)
@@ -262,7 +265,6 @@ def worker_reboot(worker_refs, reboot_all, accelerator, zone):
 
         session = f"jobman_{tpu_name}"
         subprocess.run(["tmux", "kill-session", "-t", session], capture_output=True)
-        _update_worker_status(tpu_name, "stopped")
 
         try:
             subprocess.run(["tmux", "new-session", "-d", "-s", session] + _worker_run_args(registry[tpu_name]),
@@ -353,7 +355,8 @@ def worker_delete(worker_refs, delete_all, accelerator, zone):
 @click.argument("worker_ref")
 @click.option("--worker-index", "-w", default=0, show_default=True,
               help="TPU worker index (for multi-host TPUs)")
-def worker_ssh(worker_ref, worker_index):
+@click.option("--ssh-user", "-u", default="yx3038", help="SSH username for connecting to the TPU VM")
+def worker_ssh(worker_ref, worker_index, ssh_user):
     """Open an interactive SSH session to a worker (by name or index from 'jobman status')."""
     registry = _read_workers()
     tpu_name = _resolve_worker_name(worker_ref, registry)
@@ -365,8 +368,9 @@ def worker_ssh(worker_ref, worker_index):
     if not zone:
         click.echo(f"No zone found for worker '{tpu_name}'.", err=True)
         sys.exit(1)
+    ssh_target = f"{ssh_user}@{tpu_name}" if ssh_user else tpu_name
     cmd = [
-        "gcloud", "compute", "tpus", "tpu-vm", "ssh", tpu_name,
+        "gcloud", "compute", "tpus", "tpu-vm", "ssh", ssh_target,
         f"--zone={zone}",
         f"--worker={worker_index}",
         "--ssh-flag=-o StrictHostKeyChecking=no",
@@ -395,6 +399,74 @@ def worker_logs(worker_ref, lines, follow):
         cmd.append("-f")
     cmd.append(log_file)
     subprocess.run(cmd)
+
+
+@worker.command("sync")
+@click.option("--zone", "-z", multiple=True, default=None,
+              help="GCP zone(s) to query (default: all zones from existing workers + standard TPU zones)")
+def worker_sync(zone):
+    """Rebuild workers.json from tmux sessions, timeline logs, and GCP queued-resources."""
+    existing = _read_workers()
+    recovered_tmux = _sync_workers_from_tmux()
+
+    # Determine zones to query
+    if zone:
+        zones = list(zone)
+    else:
+        zones = sorted({
+            w["zone"] for w in existing.values() if w.get("zone")
+        } | {
+            w["zone"] for w in recovered_tmux.values() if w.get("zone")
+        })
+    if not zones:
+        zones = ["us-central1-b", "us-central2-b", "us-east5-b"]
+
+    # Discover resources from GCP
+    owner = _get_owner_prefix()
+    gcp_workers: dict = {}
+    if owner:
+        click.echo(f"Querying GCP queued-resources in {', '.join(zones)}...", err=True)
+        gcp_workers = _discover_workers_from_gcp(zones, owner)
+        click.echo(f"Found {len(gcp_workers)} queued resources on GCP for owner '{owner}'.", err=True)
+    else:
+        click.echo("No .jobman_owner found; skipping GCP discovery.", err=True)
+
+    # Merge priority: existing > tmux/logs > GCP
+    merged: dict = {}
+
+    # Start with GCP-discovered resources (lowest priority)
+    for worker_id, entry in gcp_workers.items():
+        merged[worker_id] = entry
+
+    # Override with tmux-recovered entries (have richer config)
+    for worker_id, entry in recovered_tmux.items():
+        merged[worker_id] = entry
+
+    # Override with existing entries (most accurate)
+    for worker_id, entry in existing.items():
+        if worker_id in merged:
+            merged[worker_id] = entry
+            # Update status to running if tmux session exists
+            if worker_id in recovered_tmux:
+                merged[worker_id]["status"] = "running"
+
+    if not merged:
+        click.echo("No workers found from tmux sessions or GCP.")
+        return
+
+    _write_workers(merged)
+    new_from_tmux = len(set(recovered_tmux) - set(existing))
+    new_from_gcp = len(set(gcp_workers) - set(existing) - set(recovered_tmux))
+    click.echo(f"Synced {len(merged)} workers ({new_from_tmux} from tmux, {new_from_gcp} from GCP).")
+    for worker_id in sorted(merged):
+        w = merged[worker_id]
+        source = ""
+        if worker_id not in existing:
+            if worker_id in recovered_tmux:
+                source = " (from tmux)"
+            elif worker_id in gcp_workers:
+                source = " (from GCP)"
+        click.echo(f"  {worker_id}: {w['accelerator']} in {w['zone']} [{w.get('status', '?')}]{source}")
 
 
 @worker.command("show")
@@ -913,6 +985,8 @@ def _worker_run_args(worker: dict) -> list[str]:
     ]
     if worker.get("startup_script"):
         args.append(f"--startup-script={worker['startup_script']}")
+    if worker.get("ssh_user"):
+        args.append(f"--ssh-user={worker['ssh_user']}")
     return args
 
 
@@ -961,6 +1035,161 @@ def _read_workers() -> dict:
             return json.load(f)
     except (json.JSONDecodeError, OSError):
         return {}
+
+
+def _sync_workers_from_tmux() -> dict:
+    """Rebuild the worker registry from running tmux sessions + timeline logs.
+
+    For each ``jobman_*`` tmux session, reads the corresponding
+    ``timeline.jsonl`` to recover the worker config (accelerator, zone, etc.).
+    Returns the rebuilt registry dict.
+    """
+    result = subprocess.run(["tmux", "ls"], capture_output=True, text=True)
+    if result.returncode != 0:
+        return {}
+
+    worker_names: list[str] = []
+    for line in result.stdout.strip().split("\n"):
+        session = line.split(":")[0]
+        if session.startswith("jobman_"):
+            worker_names.append(session[len("jobman_"):])
+
+    log_root = os.path.join(jobman_log_dir(), "workers")
+    registry: dict = {}
+    for worker_id in sorted(worker_names):
+        timeline = os.path.join(log_root, worker_id, "timeline.jsonl")
+        if not os.path.exists(timeline):
+            continue
+        try:
+            with open(timeline) as f:
+                first = json.loads(f.readline())
+        except (json.JSONDecodeError, OSError):
+            continue
+        if first.get("event") != "worker_started":
+            continue
+
+        accelerator = first["accelerator"]
+        zone = first["zone"]
+
+        # Find startup script snapshot in the log directory
+        startup_script = None
+        worker_log_dir = os.path.join(log_root, worker_id)
+        try:
+            for fname in os.listdir(worker_log_dir):
+                if fname.endswith("_bootstrap.sh") or fname == "setup.sh":
+                    startup_script = os.path.join(os.path.abspath(worker_log_dir), fname)
+                    break
+        except OSError:
+            pass
+
+        entry = {
+            "worker_id": worker_id,
+            "tpu_name": worker_id,
+            "accelerator": accelerator,
+            "zone": zone,
+            "tpu_version": resolve_tpu_version(accelerator),
+            "pricing": first.get("pricing", "spot"),
+            "mode": first.get("allocation_mode", "queued-resources"),
+            "startup_script": startup_script,
+            "status": "running",
+            "registered": first["time"],
+            "pid": 0,
+        }
+        if first.get("ssh_user"):
+            entry["ssh_user"] = first["ssh_user"]
+        registry[worker_id] = entry
+
+    return registry
+
+
+def _get_owner_prefix() -> str | None:
+    """Read the owner name from .jobman_owner, or None if not set."""
+    owner_path = _owner_file_path()
+    if not owner_path.exists():
+        return None
+    try:
+        return owner_path.read_text().strip()
+    except OSError:
+        return None
+
+
+def _discover_workers_from_gcp(zones: list[str], owner: str) -> dict:
+    """Query GCP queued-resources list across *zones* and return a registry
+    of resources whose name starts with *owner*.
+    """
+    registry: dict = {}
+
+    def query_zone(zone: str) -> list[dict]:
+        try:
+            result = subprocess.run(
+                ["gcloud", "compute", "tpus", "queued-resources", "list",
+                 f"--zone={zone}", "--format=json"],
+                capture_output=True, text=True, timeout=60,
+            )
+            if result.returncode != 0:
+                return []
+            return json.loads(result.stdout.strip() or "[]")
+        except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError):
+            return []
+
+    with ThreadPoolExecutor(max_workers=min(len(zones), 8)) as ex:
+        futures = {ex.submit(query_zone, z): z for z in zones}
+        for fut in as_completed(futures):
+            zone = futures[fut]
+            for item in fut.result():
+                qr_name = item["name"].split("/")[-1]
+                if not qr_name.startswith(owner):
+                    continue
+                # Extract node-id (the TPU VM name)
+                try:
+                    node_id = item["tpu"]["nodeSpec"][0]["nodeId"]
+                except (KeyError, IndexError, TypeError):
+                    node_id = qr_name
+                # Extract accelerator
+                try:
+                    accelerator = item["tpu"]["nodeSpec"][0]["node"]["acceleratorType"]
+                except (KeyError, IndexError, TypeError):
+                    accelerator = ""
+                # Extract state
+                state = item.get("state", {})
+                if isinstance(state, dict):
+                    state = state.get("state", "UNKNOWN")
+                state = str(state).upper()
+                # Extract runtime version
+                try:
+                    tpu_version = item["tpu"]["nodeSpec"][0]["node"]["runtimeVersion"]
+                except (KeyError, IndexError, TypeError):
+                    tpu_version = resolve_tpu_version(accelerator) if accelerator else ""
+                # Determine pricing from presence of "spot" key
+                pricing = "spot" if "spot" in item else "standard"
+
+                registry[qr_name] = {
+                    "worker_id": qr_name,
+                    "tpu_name": node_id,
+                    "accelerator": accelerator,
+                    "zone": zone,
+                    "tpu_version": tpu_version,
+                    "pricing": pricing,
+                    "mode": "queued-resources",
+                    "startup_script": None,
+                    "status": state.lower(),
+                    "registered": item.get("createTime", ""),
+                    "pid": 0,
+                }
+
+    return registry
+
+
+def _write_workers(registry: dict) -> None:
+    """Write the worker registry to workers.json with file locking."""
+    path = os.path.join(jobman_dir(), "workers.json")
+    lock_dir = path + ".d.lock"
+    os.makedirs(jobman_dir(), exist_ok=True)
+    with dir_lock(lock_dir):
+        tmp = path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(registry, f, indent=2)
+        os.replace(tmp, path)
 
 
 def _latest_task_log(task_id: str) -> str | None:
@@ -1105,32 +1334,37 @@ def _select_workers(
 
 def _update_worker_status(tpu_name: str, status: str) -> None:
     path = os.path.join(jobman_dir(), "workers.json")
-    if not os.path.exists(path):
-        return
+    lock_dir = path + ".d.lock"
     try:
-        with open(path) as f:
-            registry = json.load(f)
-        if tpu_name in registry:
+        with dir_lock(lock_dir):
+            if not os.path.exists(path):
+                return
+            with open(path) as f:
+                registry = json.load(f)
+            if tpu_name not in registry:
+                return
             registry[tpu_name]["status"] = status
-        tmp = path + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump(registry, f, indent=2)
-        os.replace(tmp, path)
+            tmp = path + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(registry, f, indent=2)
+            os.replace(tmp, path)
     except (json.JSONDecodeError, OSError) as e:
         logger.warning("Failed to update worker status: %s", e)
 
 
 def _remove_worker(tpu_name: str) -> None:
     path = os.path.join(jobman_dir(), "workers.json")
-    if not os.path.exists(path):
-        return
+    lock_dir = path + ".d.lock"
     try:
-        with open(path) as f:
-            registry = json.load(f)
-        registry.pop(tpu_name, None)
-        tmp = path + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump(registry, f, indent=2)
-        os.replace(tmp, path)
+        with dir_lock(lock_dir):
+            if not os.path.exists(path):
+                return
+            with open(path) as f:
+                registry = json.load(f)
+            registry.pop(tpu_name, None)
+            tmp = path + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(registry, f, indent=2)
+            os.replace(tmp, path)
     except (json.JSONDecodeError, OSError) as e:
         logger.warning("Failed to remove worker from registry: %s", e)

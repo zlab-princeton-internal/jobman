@@ -139,7 +139,7 @@ class TPU:
             if st == "READY":
                 logger.info("TPU %s is READY (%.0fs elapsed)", self.name, elapsed)
                 return
-            if st in ("PREEMPTED", "TERMINATED", "FAILED"):
+            if st in ("PREEMPTED", "TERMINATED", "FAILED", "SUSPENDED"):
                 raise RuntimeError(f"TPU {self.name} entered terminal state: {st}")
             logger.info("TPU %s status=%s, waiting %ds...", self.name, st, interval)
             time.sleep(interval)
@@ -238,16 +238,25 @@ class TPU:
 
         return _normalize_status(qr_state)
 
-    def _delete_queued_resource(self) -> None:
+    def _delete_queued_resource(self, max_retries: int = 3) -> None:
         logger.info("Deleting queued resource %s...", self._queued_resource_id)
-        result = _run([
-            "gcloud", "alpha", "compute", "tpus", "queued-resources", "delete",
-            self._queued_resource_id,
-            f"--zone={self.zone}", "--quiet", "--force"
-        ], check=False)
-        stderr = result.stderr or ""
-        if result.returncode != 0 and "NOT_FOUND" not in stderr and "not found" not in stderr.lower():
-            logger.warning("Failed to delete queued resource %s", self._queued_resource_id)
+        for attempt in range(1, max_retries + 1):
+            result = _run([
+                "gcloud", "alpha", "compute", "tpus", "queued-resources", "delete",
+                self._queued_resource_id,
+                f"--zone={self.zone}", "--quiet", "--force"
+            ], check=False)
+            stderr = result.stderr or ""
+            if result.returncode == 0:
+                return
+            if "NOT_FOUND" in stderr or "not found" in stderr.lower():
+                return
+            logger.warning(
+                "Failed to delete queued resource %s (attempt %d/%d)",
+                self._queued_resource_id, attempt, max_retries,
+            )
+            if attempt < max_retries:
+                time.sleep(5 * attempt)
 
 
 # ------------------------------------------------------------------
