@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from fnmatch import fnmatch
@@ -404,8 +405,11 @@ def worker_logs(worker_ref, lines, follow):
 @worker.command("sync")
 @click.option("--zone", "-z", multiple=True, default=None,
               help="GCP zone(s) to query (default: all zones from existing workers + standard TPU zones)")
-def worker_sync(zone):
+@click.option("--startup-script", "-s", type=click.Path(exists=True, dir_okay=False, path_type=Path),
+              default=None, help="Set startup script for workers that don't have one")
+def worker_sync(zone, startup_script):
     """Rebuild workers.json from tmux sessions, timeline logs, and GCP queued-resources."""
+    startup_script = str(startup_script.resolve()) if startup_script else None
     existing = _read_workers()
     recovered_tmux = _sync_workers_from_tmux()
 
@@ -453,6 +457,20 @@ def worker_sync(zone):
     if not merged:
         click.echo("No workers found from tmux sessions or GCP.")
         return
+
+    if startup_script:
+        applied = 0
+        for w in merged.values():
+            if not w.get("startup_script"):
+                worker_log_dir = os.path.join(jobman_log_dir(), "workers", w["worker_id"])
+                os.makedirs(worker_log_dir, exist_ok=True)
+                dst = os.path.join(worker_log_dir, os.path.basename(startup_script))
+                if not os.path.exists(dst):
+                    shutil.copy2(startup_script, dst)
+                w["startup_script"] = dst
+                applied += 1
+        if applied:
+            click.echo(f"Applied startup script to {applied} workers without one.")
 
     _write_workers(merged)
     new_from_tmux = len(set(recovered_tmux) - set(existing))
@@ -767,13 +785,40 @@ def task_show(task_ref):
 # ---------------------------------------------------------------------------
 
 def _process_status(w: dict) -> str:
-    """Return worker process status: 'running', 'dead' (session gone), or 'stopped'."""
+    """Return worker process status: 'running', 'setup', 'dead', or 'stopped'."""
     stored = w.get("status", "")
     if stored == "running":
         session = f"jobman_{w['worker_id']}"
         result = subprocess.run(["tmux", "has-session", "-t", session], capture_output=True)
         if result.returncode != 0:
             return "dead"
+        # Check timeline to distinguish setup vs running
+        timeline = os.path.join(
+            jobman_log_dir(), "workers", w["worker_id"], "timeline.jsonl"
+        )
+        try:
+            with open(timeline, "rb") as f:
+                # Seek to the last line efficiently
+                f.seek(0, 2)
+                pos = f.tell()
+                if pos == 0:
+                    return stored
+                # Read backwards to find the last newline
+                pos -= 1
+                while pos > 0:
+                    f.seek(pos)
+                    if f.read(1) == b"\n":
+                        break
+                    pos -= 1
+                else:
+                    f.seek(0)
+                last_line = f.readline().decode().strip()
+                if last_line:
+                    event = json.loads(last_line)
+                    if event.get("event") == "bootstrap_started":
+                        return "setup"
+        except (OSError, ValueError):
+            pass
     return stored
 
 
