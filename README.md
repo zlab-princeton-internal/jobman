@@ -3,7 +3,7 @@
 Lightweight TPU job orchestration. Workers hold TPUs persistently and poll a shared queue for tasks.
 
 Full manual:
-- [docs/manual.md](/gpfsnyu/scratch/yx3038/pruning/jobman-lite/docs/manual.md)
+- [docs/manual.md](docs/manual.md)
 
 ## Install
 
