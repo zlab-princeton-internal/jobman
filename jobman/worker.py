@@ -201,7 +201,7 @@ class Worker:
                         continue
 
                     self._send_task_notification(task, "BEGIN")
-                    outcome, preempted = self._run_task(task)
+                    outcome, failure_reason = self._run_task(task)
 
                     if outcome == "deleted":
                         logger.info("Task %s was deleted while running; skipping queue release", task["id"])
@@ -209,9 +209,11 @@ class Worker:
                     if outcome == "paused":
                         logger.info("Task %s was paused while running; leaving it paused", task["id"])
                         continue
-                    if preempted:
+                    if failure_reason in ("preempted", "infra"):
+                        # Infrastructure failure — re-queue without burning a retry
                         self.queue.release(task["id"], "interrupted")
-                        self._handle_preemption()
+                        if failure_reason == "preempted":
+                            self._handle_preemption()
                     else:
                         final_task = self.queue.release(task["id"], "done" if outcome == "done" else "failed")
                         if outcome == "done":
@@ -247,9 +249,8 @@ class Worker:
                 self.queue.release(task_id, "interrupted")
                 self._handle_preemption()
             else:
-                final_task = self.queue.release(task_id, "failed")
-                if final_task is not None and final_task.get("status") == "failed":
-                    self._send_task_notification(final_task, "FAIL")
+                # Unhandled exception is an infra issue, not a task failure
+                self.queue.release(task_id, "interrupted")
         except Exception:
             logger.exception("Failed to recover task %s after loop exception", task_id)
 
@@ -679,8 +680,14 @@ class Worker:
         if not sent:
             logger.warning("Email notification %s for task %s was not sent", event, task["id"])
 
-    def _run_task(self, task: dict) -> tuple[str, bool]:
-        """Run a task. Returns (outcome, preempted)."""
+    def _run_task(self, task: dict) -> tuple[str, str | None]:
+        """Run a task. Returns (outcome, failure_reason).
+
+        failure_reason is None for success/control-state outcomes, or one of:
+        - "preempted"  – TPU was preempted/suspended/deleted
+        - "infra"      – infrastructure failure (SSH, SCP, disconnect, timeout)
+        - "task"       – the task script itself failed (misconfiguration)
+        """
         task_id = task["id"]
         run_count = task.get("run_count", 1)
 
@@ -691,7 +698,7 @@ class Worker:
         remote_script = f"/tmp/jobman_{task_id}.sh"
         control_state = self._task_control_state(task_id)
         if control_state is not None:
-            return control_state, False
+            return control_state, None
         if self.debug:
             output_buffer: list[str] = []
             activity_tracker = _OutputActivityTracker()
@@ -700,9 +707,7 @@ class Worker:
             )
             if scp_result.returncode != 0:
                 logger.error("SCP failed for task %s: %s", task_id, self._extract_process_error(scp_result, "SCP failed"))
-                if self._is_preempted():
-                    return "failed", True
-                return "failed", False
+                return "failed", "preempted" if self._is_preempted() else "infra"
 
             env_str = (
                 f"JOBMAN_TPU_NAME={self.worker_id} "
@@ -711,7 +716,7 @@ class Worker:
             )
             control_state = self._task_control_state(task_id)
             if control_state is not None:
-                return control_state, False
+                return control_state, None
             inline = f"chmod +x {remote_script} && {env_str} bash {remote_script}"
             proc = self._popen_gcloud_ssh(
                 0, inline,
@@ -734,10 +739,8 @@ class Worker:
             tee_thread.join()
             if control_state is not None:
                 if control_state == "failed":
-                    if self._is_preempted():
-                        return "failed", True
-                    return "failed", False
-                return control_state, False
+                    return "failed", "preempted" if self._is_preempted() else "infra"
+                return control_state, None
         else:
             log_dir = os.path.join(self._task_log_root, task_id)
             os.makedirs(log_dir, exist_ok=True)
@@ -761,9 +764,7 @@ class Worker:
                     detail = self._extract_process_error(scp_result, "SCP failed")
                     logger.error("SCP failed for task %s: %s", task_id, detail)
                     lf.write(f"\n=== Task {task_id} ended at {_now()}, exit_code={scp_result.returncode} ===\n")
-                    if self._is_preempted():
-                        return "failed", True
-                    return "failed", False
+                    return "failed", "preempted" if self._is_preempted() else "infra"
 
                 env_str = (
                     f"JOBMAN_TPU_NAME={self.worker_id} "
@@ -773,7 +774,7 @@ class Worker:
                 control_state = self._task_control_state(task_id)
                 if control_state is not None:
                     lf.write(f"=== Task {task_id} externally {control_state} before remote execution ===\n")
-                    return control_state, False
+                    return control_state, None
                 inline = f"chmod +x {remote_script} && {env_str} bash {remote_script}"
                 activity_tracker = _OutputActivityTracker()
                 proc = self._popen_gcloud_ssh(
@@ -798,11 +799,9 @@ class Worker:
                 if control_state is not None:
                     if control_state == "failed":
                         lf.write(f"=== Task {task_id} terminated due to inactivity timeout ===\n")
-                        if self._is_preempted():
-                            return "failed", True
-                        return "failed", False
+                        return "failed", "preempted" if self._is_preempted() else "infra"
                     lf.write(f"=== Task {task_id} externally {control_state} during execution ===\n")
-                    return control_state, False
+                    return control_state, None
 
         pattern_detected = False
         if exit_code == 0:
@@ -813,7 +812,7 @@ class Worker:
             if pattern_detected:
                 logger.warning("Task %s matched retryable failure pattern despite exit code 0", task_id)
                 self._record_timeline("task_retryable_pattern_detected", task_id=task_id)
-                return "failed", False
+                return "failed", "infra"
 
         disconnect_detected = False
         if self.debug:
@@ -821,17 +820,20 @@ class Worker:
         else:
             disconnect_detected = self._has_worker_disconnect_pattern(log_file=log_file)
         if disconnect_detected:
-            logger.warning("Task %s matched worker disconnect pattern; treating as interrupted", task_id)
+            logger.warning("Task %s matched worker disconnect pattern; treating as infra failure", task_id)
             self._record_timeline("task_worker_disconnect_detected", task_id=task_id)
-            return "failed", True
+            return "failed", "preempted" if self._is_preempted() else "infra"
 
         if exit_code == 255:
-            # Possible preemption
+            # SSH exit 255 = connection lost, always an infrastructure issue
             if self._is_preempted():
-                logger.warning("Task %s: SSH exit 255 + TPU preempted → interrupted", task_id)
-                return "failed", True
+                logger.warning("Task %s: SSH exit 255 + TPU preempted → infra failure", task_id)
+                return "failed", "preempted"
+            else:
+                logger.warning("Task %s: SSH exit 255 (connection lost) → infra failure", task_id)
+                return "failed", "infra"
         elif exit_code != 0:
-            self._record_timeline("ssh_failed",
+            self._record_timeline("task_failed",
                                   phase="task",
                                   task_id=task_id,
                                   returncode=exit_code)
@@ -841,13 +843,18 @@ class Worker:
             logger.info("Task %s completed successfully", task_id)
         else:
             logger.warning("Task %s failed with exit code %d", task_id, exit_code)
-        return ("done" if success else "failed"), False
+        return ("done" if success else "failed"), (None if success else "task")
 
     def _task_control_state(self, task_id: str) -> str | None:
         task = self.queue.get(task_id)
         if task is None:
-            self._record_timeline("task_deleted_while_running", task_id=task_id)
-            return "deleted"
+            # Retry once — a transient NFS/WekaFS read can return stale data
+            time.sleep(1)
+            task = self.queue.get(task_id)
+            if task is None:
+                self._record_timeline("task_deleted_while_running", task_id=task_id)
+                return "deleted"
+            logger.info("Task %s appeared missing but found on retry (transient FS glitch)", task_id)
         if task.get("status") == "paused":
             self._record_timeline("task_paused_while_running", task_id=task_id)
             return "paused"

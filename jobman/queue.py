@@ -61,8 +61,21 @@ class Queue:
         return task_id
 
     def claim(self, accelerator: str, zone: str, worker_id: str) -> Optional[dict]:
-        """Atomically claim first matching pending task. Returns task or None."""
+        """Atomically claim first matching pending task. Returns task or None.
+
+        If the worker already owns a running task (e.g. from a lost release),
+        that stale task is released back to pending first.
+        """
         with self._locked() as tasks:
+            # Guard: release any stale running tasks owned by this worker
+            for task in tasks.values():
+                if task.get("worker_id") == worker_id and task["status"] == "running":
+                    logger.warning("Releasing stale running task %s from worker %s",
+                                   task["id"], worker_id)
+                    task["status"] = "pending"
+                    task["worker_id"] = None
+                    task["started"] = None
+
             for task in tasks.values():
                 if (task["status"] == "pending"
                         and task["accelerator"] == accelerator
