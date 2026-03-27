@@ -8,38 +8,40 @@ TMP_DIR="${SCRIPT_DIR}/.tmp_submissions"
 # Edit these arrays directly.
 ACCELS=(
   # "v4-128"
-  "v6e-128"
+  # "v6e-128"
+  "v5p-128"
 )
 
 ZONES=(
   # "us-central2-b"
   # "us-central1-b"
-  "us-east5-b"
+  # "us-east5-b"
 )
 
 MODEL_TYPES=(
   # "llama3.1-4b-depth"
-  "llama3.1-4b-width"
-  # "llama3.1-4b-flap"
+  # "llama3.1-4b-width"
+  "llama3.1-4b-flap"
+  # "llama3.1-8b"
 )
 
 PRETRAINS=(
   # "scratch"
-  # "meta"
-  "l200"
+  "meta"
+  # "l200"
 )
 
 LENGTHS=(
   # "10"
   # "30"
-  # "50"
+  "50"
   "250"
-  # "500"
+  "500"
 )
 
 LRS=(
-  # "1e-4"
-  "3e-4"
+  "1e-4"
+  # "3e-4"
 )
 
 mkdir -p "$TMP_DIR"

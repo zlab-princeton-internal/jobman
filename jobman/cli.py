@@ -42,6 +42,10 @@ ACCELERATOR_PATTERN = re.compile(r"^v[a-z0-9]+-\d+$", re.IGNORECASE)
 ZONE_PATTERN = re.compile(r"^[a-z]+(?:-[a-z0-9]+)+\d-[a-z]$")
 MAIL_TYPE_ORDER = ("BEGIN", "END", "FAIL")
 MAIL_TYPE_CHOICES = {"BEGIN", "END", "FAIL", "ALL", "NONE"}
+ANALYTICS_OUTPUT_CHOICES = click.Choice(["table", "json"])
+ANALYTICS_OWNERSHIP_CHOICES = click.Choice(["all", "mine", "not_mine", "unknown"])
+BILLING_TABLE_PATTERN = re.compile(r"^[A-Za-z0-9_:\-\.]+$")
+DEFAULT_BILLING_EXPORT_TABLE = "billing_export_us.gcp_billing_export_resource_v1_017331_B5D939_87F923"
 
 
 # ---------------------------------------------------------------------------
@@ -69,19 +73,235 @@ def analytics():
 @analytics.command("availability")
 def analytics_availability_cmd():
     """Show availability analytics."""
-    click.echo(analytics_availability.summary_text())
+    click.echo("Availability analytics is not implemented yet.")
 
 
 @analytics.command("cost")
-def analytics_cost_cmd():
-    """Show cost analytics."""
-    click.echo(analytics_cost.summary_text())
+@click.option(
+    "--date",
+    "target_date",
+    required=True,
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    help="Billing date to query, in YYYY-MM-DD.",
+)
+@click.option(
+    "--billing-table",
+    envvar="JOBMAN_BILLING_EXPORT_TABLE",
+    default=DEFAULT_BILLING_EXPORT_TABLE,
+    show_default=True,
+    help="BigQuery billing export table, e.g. project.dataset.table.",
+)
+@click.option("--limit", default=50, show_default=True, type=int, help="Maximum rows to return.")
+@click.option(
+    "--location",
+    default=None,
+    help="Optional location filter, matched against billing location.location.",
+)
+@click.option(
+    "--network-only",
+    is_flag=True,
+    help="Only show rows whose SKU matches network data transfer.",
+)
+@click.option(
+    "--output",
+    "output_format",
+    default="table",
+    show_default=True,
+    type=ANALYTICS_OUTPUT_CHOICES,
+    help="Render output as a compact table or raw JSON.",
+)
+@click.option(
+    "--ownership",
+    default="all",
+    show_default=True,
+    type=ANALYTICS_OWNERSHIP_CHOICES,
+    help="Filter by conservative ownership classification.",
+)
+def analytics_cost_cmd(target_date, billing_table, limit, location, network_only, output_format, ownership):
+    """Show a daily billing breakdown from BigQuery billing export."""
+    _validate_billing_table(billing_table)
+    if limit <= 0:
+        raise click.UsageError("--limit must be greater than 0.")
+
+    where_clauses = [
+        "cost > 0",
+        "cost_type = 'regular'",
+        "DATE(usage_start_time) = @target_date",
+    ]
+    parameters = [f"target_date:DATE:{target_date.date().isoformat()}"]
+    if location:
+        where_clauses.append("LOWER(location.location) = LOWER(@location)")
+        parameters.append(f"location:STRING:{location}")
+    if network_only:
+        where_clauses.append("sku.description LIKE '%Network %Data Transfer%'")
+    if ownership != "all":
+        where_clauses.append("ownership = @ownership")
+        parameters.append(f"ownership:STRING:{ownership}")
+
+    query = f"""
+WITH classified AS (
+SELECT
+  DATE(usage_start_time) AS usage_date,
+  service.description AS service,
+  sku.description AS sku,
+  location.location AS location,
+  project.id AS project_id,
+  resource.name AS resource_name,
+  resource.global_name AS global_name,
+  CASE
+    WHEN LOWER(COALESCE(resource.name, '')) LIKE 'llm_pruning%' THEN 'mine'
+    WHEN LOWER(COALESCE(resource.global_name, '')) LIKE '%llm_pruning%' THEN 'mine'
+    WHEN LOWER(COALESCE(resource.name, '')) LIKE 'yufeng%' THEN 'mine'
+    WHEN LOWER(COALESCE(resource.global_name, '')) LIKE '%/yufeng%' THEN 'mine'
+    WHEN service.description = 'Cloud Storage'
+      AND COALESCE(resource.name, '') != ''
+      AND LOWER(COALESCE(resource.name, '')) NOT LIKE 'llm_pruning%' THEN 'not_mine'
+    WHEN service.description = 'Cloud Storage'
+      AND COALESCE(resource.global_name, '') != ''
+      AND LOWER(COALESCE(resource.global_name, '')) NOT LIKE '%llm_pruning%' THEN 'not_mine'
+    ELSE 'unknown'
+  END AS ownership,
+  ROUND(SUM(cost), 2) AS cost,
+  ROUND(SUM(usage.amount), 2) AS usage_amount,
+  ANY_VALUE(usage.unit) AS usage_unit
+FROM `{billing_table}`
+WHERE
+  {' AND '.join(where_clauses[:4] if ownership == 'all' and not network_only and not location else [c for c in where_clauses if c not in ('ownership = @ownership',)])}
+GROUP BY usage_date, service, sku, location, project_id, resource_name, global_name, ownership
+)
+SELECT *
+FROM classified
+WHERE
+  {' AND '.join([c for c in where_clauses[4:] if c != "sku.description LIKE '%Network %Data Transfer%'"] + (["sku LIKE '%Network %Data Transfer%'"] if network_only else []) or ["TRUE"])}
+ORDER BY cost DESC
+LIMIT {limit}
+""".strip()
+
+    rows = _run_bq_query(query, parameters)
+    _emit_analytics_rows(rows, output_format=output_format)
+
+
+@analytics.command("egress")
+@click.option(
+    "--date",
+    "target_date",
+    required=True,
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    help="Billing date to query, in YYYY-MM-DD.",
+)
+@click.option(
+    "--billing-table",
+    envvar="JOBMAN_BILLING_EXPORT_TABLE",
+    default=DEFAULT_BILLING_EXPORT_TABLE,
+    show_default=True,
+    help="BigQuery billing export table, e.g. project.dataset.table.",
+)
+@click.option("--limit", default=50, show_default=True, type=int, help="Maximum rows to return.")
+@click.option(
+    "--kind",
+    type=click.Choice(["internet", "inter-zone", "all"]),
+    default="all",
+    show_default=True,
+    help="Which transfer SKU family to include.",
+)
+@click.option(
+    "--location",
+    default=None,
+    help="Optional location filter, matched against billing location.location.",
+)
+@click.option(
+    "--output",
+    "output_format",
+    default="table",
+    show_default=True,
+    type=ANALYTICS_OUTPUT_CHOICES,
+    help="Render output as a compact table or raw JSON.",
+)
+@click.option(
+    "--ownership",
+    default="all",
+    show_default=True,
+    type=ANALYTICS_OWNERSHIP_CHOICES,
+    help="Filter by conservative ownership classification.",
+)
+def analytics_egress_cmd(target_date, billing_table, limit, kind, location, output_format, ownership):
+    """Show daily network transfer billing rows from BigQuery billing export."""
+    _validate_billing_table(billing_table)
+    if limit <= 0:
+        raise click.UsageError("--limit must be greater than 0.")
+
+    where_clauses = [
+        "cost > 0",
+        "cost_type = 'regular'",
+        "DATE(usage_start_time) = @target_date",
+    ]
+    parameters = [f"target_date:DATE:{target_date.date().isoformat()}"]
+    if location:
+        where_clauses.append("LOWER(location.location) = LOWER(@location)")
+        parameters.append(f"location:STRING:{location}")
+    if ownership != "all":
+        where_clauses.append("ownership = @ownership")
+        parameters.append(f"ownership:STRING:{ownership}")
+    if kind == "internet":
+        sku_filter = "sku LIKE '%Network Internet Data Transfer Out%'"
+    elif kind == "inter-zone":
+        sku_filter = "sku LIKE '%Network Inter Zone Data Transfer%'"
+    else:
+        sku_filter = (
+            "("
+            "sku LIKE '%Network Internet Data Transfer Out%' "
+            "OR sku LIKE '%Network Inter Zone Data Transfer%'"
+            ")"
+        )
+
+    query = f"""
+WITH classified AS (
+SELECT
+  DATE(usage_start_time) AS usage_date,
+  service.description AS service,
+  sku.description AS sku,
+  location.location AS location,
+  project.id AS project_id,
+  resource.name AS resource_name,
+  resource.global_name AS global_name,
+  CASE
+    WHEN LOWER(COALESCE(resource.name, '')) LIKE 'llm_pruning%' THEN 'mine'
+    WHEN LOWER(COALESCE(resource.global_name, '')) LIKE '%llm_pruning%' THEN 'mine'
+    WHEN LOWER(COALESCE(resource.name, '')) LIKE 'yufeng%' THEN 'mine'
+    WHEN LOWER(COALESCE(resource.global_name, '')) LIKE '%/yufeng%' THEN 'mine'
+    WHEN service.description = 'Cloud Storage'
+      AND COALESCE(resource.name, '') != ''
+      AND LOWER(COALESCE(resource.name, '')) NOT LIKE 'llm_pruning%' THEN 'not_mine'
+    WHEN service.description = 'Cloud Storage'
+      AND COALESCE(resource.global_name, '') != ''
+      AND LOWER(COALESCE(resource.global_name, '')) NOT LIKE '%llm_pruning%' THEN 'not_mine'
+    ELSE 'unknown'
+  END AS ownership,
+  ROUND(SUM(cost), 2) AS cost,
+  ROUND(SUM(usage.amount), 2) AS usage_amount,
+  ANY_VALUE(usage.unit) AS usage_unit
+FROM `{billing_table}`
+WHERE
+  {' AND '.join([c for c in where_clauses if c != 'ownership = @ownership'])}
+GROUP BY usage_date, service, sku, location, project_id, resource_name, global_name, ownership
+)
+SELECT *
+FROM classified
+WHERE
+  {sku_filter}
+  {"AND ownership = @ownership" if ownership != "all" else ""}
+ORDER BY cost DESC
+LIMIT {limit}
+""".strip()
+
+    rows = _run_bq_query(query, parameters)
+    _emit_analytics_rows(rows, output_format=output_format)
 
 
 @analytics.command("storage")
 def analytics_storage_cmd():
     """Show storage analytics."""
-    click.echo(analytics_storage.summary_text())
+    click.echo("Storage analytics is not implemented yet.")
 
 
 # ---------------------------------------------------------------------------
@@ -101,7 +321,7 @@ def worker():
 @click.option("--allocation-mode", "-m", default="queued-resources", type=MODE_CHOICES, show_default=True)
 @click.option("--startup-script", "-s", type=click.Path(exists=True, dir_okay=False, path_type=Path),
               default=None, help="Optional bootstrap script to run on all TPU hosts before claiming tasks")
-@click.option("--ssh-user", "-u", default="yx3038", help="SSH username for connecting to TPU VMs (default: gcloud default)")
+@click.option("--ssh-user", "-u", default="zephyr", help="SSH username for connecting to TPU VMs (default: gcloud default)")
 @click.option("--debug", is_flag=True, default=False,
               help="Run interactively in the foreground with live output and no log files")
 def worker_start(accelerator, zone, tpu_name, pricing, allocation_mode, startup_script, ssh_user, debug):
@@ -356,7 +576,7 @@ def worker_delete(worker_refs, delete_all, accelerator, zone):
 @click.argument("worker_ref")
 @click.option("--worker-index", "-w", default=0, show_default=True,
               help="TPU worker index (for multi-host TPUs)")
-@click.option("--ssh-user", "-u", default="yx3038", help="SSH username for connecting to the TPU VM")
+@click.option("--ssh-user", "-u", default="zephyr", help="SSH username for connecting to the TPU VM")
 def worker_ssh(worker_ref, worker_index, ssh_user):
     """Open an interactive SSH session to a worker (by name or index from 'jobman status')."""
     registry = _read_workers()
@@ -505,6 +725,7 @@ def worker_show(worker_ref):
     click.echo(f"Zone              : {w['zone']}")
     click.echo(f"Pricing           : {w.get('pricing', 'spot')}")
     click.echo(f"Mode              : {w.get('mode', 'tpu-vm')}")
+    click.echo(f"Host0 IP          : {_host0_ip(w)}")
     startup_script = w.get("startup_script")
     if startup_script:
         snapshot_path = os.path.join(jobman_log_dir(), "workers", w["worker_id"], os.path.basename(startup_script))
@@ -703,17 +924,25 @@ def status(accelerator, zone, live_only, workers_only, task_only):
         if filtered_workers:
             click.echo("Fetching TPU status from GCP...", err=True)
             statuses = _fetch_worker_statuses({w["worker_id"]: w for _, w in filtered_workers})
-            click.echo(f"{'#':<4} {'WORKER':<28} {'ACCELERATOR':<12} {'ZONE':<20} {'PROCESS':<10} {'VM':<10} {'QR'}")
+            running_tasks_by_worker = _running_tasks_by_worker()
+            click.echo(f"{'#':<4} {'WORKER':<28} {'ACCELERATOR':<12} {'ZONE':<20} {'STATUS':<10} {'VM':<10} {'QR'}")
             rows = []
             for idx, w in filtered_workers:
                 pstatus, vm_status, qr_status = statuses.get(w["worker_id"], ("?", "?", "?"))
                 if live_only and qr_status.upper() != "ACTIVE":
                     continue
-                rows.append((idx, w, pstatus, vm_status, qr_status))
+                display_status = _worker_display_status(
+                    w,
+                    process_status=pstatus,
+                    vm_status=vm_status,
+                    qr_status=qr_status,
+                    has_running_task=w["worker_id"] in running_tasks_by_worker,
+                )
+                rows.append((idx, w, display_status, vm_status, qr_status))
             if rows:
-                for idx, w, pstatus, vm_status, qr_status in rows:
+                for idx, w, display_status, vm_status, qr_status in rows:
                     click.echo(f"{idx:<4} {w['worker_id']:<28} {w['accelerator']:<12} {w['zone']:<20} "
-                               f"{pstatus:<10} {vm_status:<10} {qr_status}")
+                               f"{display_status:<10} {vm_status:<10} {qr_status}")
             else:
                 click.echo("  (none)")
         else:
@@ -836,6 +1065,53 @@ def _query_tpu_statuses(w: dict) -> tuple[str, str]:
         return "UNKNOWN", "UNKNOWN"
 
 
+def _host0_ip(worker: dict) -> str:
+    """Return the host0 TPU VM external IP address, or '-' when unavailable."""
+    try:
+        result = subprocess.run(
+            [
+                "gcloud",
+                "compute",
+                "tpus",
+                "tpu-vm",
+                "describe",
+                worker["worker_id"],
+                f"--zone={worker['zone']}",
+                "--format=json",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except (OSError, KeyError):
+        return "-"
+
+    if result.returncode != 0:
+        return "-"
+
+    try:
+        info = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError:
+        return "-"
+
+    endpoints = info.get("networkEndpoints")
+    if isinstance(endpoints, list) and endpoints:
+        first = endpoints[0]
+        if isinstance(first, dict):
+            access_config = first.get("accessConfig")
+            ip = None
+            if isinstance(access_config, dict):
+                ip = access_config.get("externalIp")
+            if not ip:
+                candidate = first.get("ipAddress")
+                if candidate and not str(candidate).startswith("10."):
+                    ip = candidate
+            if ip:
+                return str(ip)
+
+    return "-"
+
+
 def _fetch_worker_statuses(workers: dict) -> dict:
     """Fetch process + TPU status for all workers in parallel.
     Returns {worker_id: (process_status, vm_status, qr_status)}.
@@ -855,6 +1131,43 @@ def _fetch_worker_statuses(workers: dict) -> dict:
                 bar.update(1)
 
     return results
+
+
+def _running_tasks_by_worker() -> set[str]:
+    """Return worker IDs that currently own a running task."""
+    q = Queue()
+    return {
+        task["worker_id"]
+        for task in q.list()
+        if task.get("status") == "running" and task.get("worker_id")
+    }
+
+
+def _worker_display_status(
+    worker: dict,
+    *,
+    process_status: str,
+    vm_status: str,
+    qr_status: str,
+    has_running_task: bool,
+) -> str:
+    """Return the user-facing worker status shown by `jobman status`."""
+    process = (process_status or "").lower()
+    vm = (vm_status or "").upper()
+    qr = (qr_status or "").upper()
+
+    if process in {"dead", "stopped"}:
+        return process
+    if qr != "ACTIVE" or vm in {"", "UNKNOWN", "CREATING", "NOT_FOUND"}:
+        return "pending"
+    if process == "setup":
+        return "setup"
+    if process == "running":
+        return "running" if has_running_task else "idle"
+    stored = str(worker.get("status", "") or "").lower()
+    if stored in {"pending", "setup", "idle", "running"}:
+        return stored
+    return process or "unknown"
 
 
 @lru_cache(maxsize=1)
@@ -1069,6 +1382,82 @@ def _validate_zone(value: str) -> str:
             f"Invalid zone '{value}'. Expected a GCP zone like us-central2-b."
         )
     return zone
+
+
+def _validate_billing_table(value: str) -> str:
+    table = value.strip()
+    if not table:
+        raise click.UsageError("Billing table cannot be empty.")
+    if not BILLING_TABLE_PATTERN.fullmatch(table):
+        raise click.UsageError(
+            f"Invalid billing table '{value}'. Expected something like project.dataset.table."
+        )
+    return table
+
+
+def _run_bq_query(query: str, parameters: list[str]) -> list[dict]:
+    cmd = ["bq", "query", "--use_legacy_sql=false", "--format=json"]
+    for param in parameters:
+        cmd.append(f"--parameter={param}")
+    cmd.append(query)
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    except OSError as exc:
+        raise click.ClickException(
+            f"Failed to run 'bq query': {exc}. Is the BigQuery CLI installed and on PATH?"
+        ) from exc
+
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip() or "unknown error"
+        raise click.ClickException(f"BigQuery query failed: {detail}")
+
+    try:
+        payload = json.loads(result.stdout or "[]")
+    except json.JSONDecodeError as exc:
+        raise click.ClickException(f"Failed to parse BigQuery JSON output: {exc}") from exc
+
+    if not isinstance(payload, list):
+        raise click.ClickException("Unexpected BigQuery response format; expected a JSON list.")
+    return payload
+
+
+def _emit_analytics_rows(rows: list[dict], *, output_format: str) -> None:
+    if output_format == "json":
+        click.echo(json.dumps(rows, indent=2, sort_keys=True))
+        return
+
+    if not rows:
+        click.echo("No billing rows matched the requested filters.")
+        return
+
+    click.echo(
+        f"{'#':<4} {'DATE':<10} {'OWNER':<10} {'COST':>8} {'USAGE':>12} {'UNIT':<10} {'LOCATION':<14} "
+        f"{'SERVICE':<18} {'RESOURCE':<28} SKU"
+    )
+    for idx, row in enumerate(rows, start=1):
+        usage_date = str(row.get("usage_date", ""))[:10]
+        ownership = str(row.get("ownership", "") or "-")[:10]
+        cost = _format_decimal_like(row.get("cost"))
+        usage_amount = _format_decimal_like(row.get("usage_amount"))
+        usage_unit = str(row.get("usage_unit", "") or "")[:10]
+        location = str(row.get("location", "") or "")[:14]
+        service = str(row.get("service", "") or "")[:18]
+        resource = str(row.get("resource_name") or row.get("global_name") or "-")[:28]
+        sku = str(row.get("sku", "") or "")
+        click.echo(
+            f"{idx:<4} {usage_date:<10} {ownership:<10} {cost:>8} {usage_amount:>12} {usage_unit:<10} "
+            f"{location:<14} {service:<18} {resource:<28} {sku}"
+        )
+
+
+def _format_decimal_like(value) -> str:
+    if value in (None, ""):
+        return "-"
+    try:
+        return f"{float(value):.2f}"
+    except (TypeError, ValueError):
+        return str(value)
 
 
 def _read_workers() -> dict:

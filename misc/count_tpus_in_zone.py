@@ -134,7 +134,7 @@ def count_zone(zone: str):
 
 def main():
     total = Counter(waiting_for_resources=0, provisioning=0, running=0, running_cores=0)
-    for zone in ["us-central2-b", "us-central1-b", "us-east5-b"]:
+    for zone in ["us-central2-b", "us-central1-b", "us-east5-b", "us-east5-a"]:
         counts = count_zone(zone)
         total.update(counts)
         print(f"zone: {zone}")
