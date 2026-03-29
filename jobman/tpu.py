@@ -11,8 +11,18 @@ from .utils import get_logger
 
 logger = get_logger(__name__)
 
-TPUStatus = Literal["READY", "CREATING", "PREEMPTED", "TERMINATED", "SUSPENDED",
-                    "FAILED", "NOT_FOUND", "UNKNOWN"]
+TPUStatus = Literal[
+    "READY",
+    "WAITING_FOR_RESOURCES",
+    "PROVISIONING",
+    "CREATING",
+    "PREEMPTED",
+    "TERMINATED",
+    "SUSPENDED",
+    "FAILED",
+    "NOT_FOUND",
+    "UNKNOWN",
+]
 AllocationMode = Literal["tpu-vm", "queued-resources"]
 Pricing = Literal["spot", "preemptible", "standard"]
 
@@ -21,7 +31,8 @@ DEFAULT_TPU_VERSION = "tpu-ubuntu2204-base"
 
 _TPU_VERSION_MAP = {
     "v4": "tpu-ubuntu2204-base",
-    "v5litepod": "v2-alpha-tpuv5-lite",
+    "v5e": "v2-alpha-tpuv5-lite",
+    "v5p": "v2-alpha-tpuv5",
     "v6e": "v2-alpha-tpuv6e",
 }
 
@@ -126,11 +137,17 @@ class TPU:
             self._delete_queued_resource()
         self._delete_tpu_vm()
 
-    def wait_ready(self, timeout: int = 86400, poll_interval: int = 30) -> None:
+    def wait_ready(
+        self,
+        timeout: int = 86400,
+        poll_interval: int = 30,
+        status_callback=None,
+    ) -> None:
         """Poll until READY or timeout. Uses exponential backoff up to poll_interval."""
         logger.info("Waiting for TPU %s to be READY (timeout=%ds)...", self.name, timeout)
         start = time.time()
         interval = 10
+        last_reported: TPUStatus | None = None
         while True:
             elapsed = time.time() - start
             if elapsed > timeout:
@@ -141,6 +158,9 @@ class TPU:
                 return
             if st in ("PREEMPTED", "TERMINATED", "FAILED", "SUSPENDED"):
                 raise RuntimeError(f"TPU {self.name} entered terminal state: {st}")
+            if status_callback is not None and st != last_reported:
+                status_callback(st)
+                last_reported = st
             logger.info("TPU %s status=%s, waiting %ds...", self.name, st, interval)
             time.sleep(interval)
             interval = min(interval * 2, poll_interval)
@@ -266,9 +286,9 @@ class TPU:
 def _normalize_status(state: str) -> TPUStatus:
     mapping = {
         "READY": "READY",
-        "PROVISIONING": "CREATING",
+        "PROVISIONING": "PROVISIONING",
         "CREATING": "CREATING",
-        "WAITING_FOR_RESOURCES": "CREATING",
+        "WAITING_FOR_RESOURCES": "WAITING_FOR_RESOURCES",
         "PREEMPTED": "PREEMPTED",
         "TERMINATED": "TERMINATED",
         "SUSPENDING": "SUSPENDED",
@@ -287,7 +307,7 @@ def _num_workers(accelerator: str) -> int:
         gen = parts[0]  # e.g. "v4", "v5e", "v6e"
         if gen == "v4":
             return max(1, chips // 8)
-        elif gen in ("v5e", "v6e"):
+        elif gen in ("v5e", "v5p", "v6e"):
             return max(1, chips // 4)
         else:
             # Default: assume 8 chips per host

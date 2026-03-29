@@ -129,6 +129,26 @@ class WorkerTests(unittest.TestCase):
         worker.tpu.request.assert_called_once()
         worker.tpu.wait_ready.assert_called_once()
 
+    def test_run_records_task_lifecycle_events(self):
+        worker = self._make_worker()
+        task = {"id": "task-1", "name": "demo-task"}
+
+        worker._ensure_tpu_ready = Mock()
+        worker._ensure_bootstrap_ready = Mock(return_value=(True, False))
+        worker._check_host_health = Mock(return_value=True)
+        worker._run_task = Mock(return_value=("done", None))
+        worker._send_task_notification = Mock()
+        worker._register = Mock()
+        worker.queue = Mock()
+        worker.queue.claim.side_effect = [task, KeyboardInterrupt()]
+        worker.queue.release.return_value = task
+
+        worker.run()
+
+        timeline = Path(worker._timeline_path).read_text().splitlines()
+        self.assertTrue(any('"event": "task_started"' in line for line in timeline))
+        self.assertTrue(any('"event": "task_completed"' in line for line in timeline))
+
     def test_register_preserves_all_workers_across_processes(self):
         ctx = multiprocessing.get_context("fork")
         worker_ids = [f"worker-{idx}" for idx in range(6)]

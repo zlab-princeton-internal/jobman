@@ -112,7 +112,12 @@ class Worker:
         self._log_dir = os.path.join(jobman_log_dir(), "workers", tpu_name)
         self._timeline_path = os.path.join(self._log_dir, "timeline.jsonl")
         self._bootstrap_complete = False
+        self._bootstrap_failures = 0
+        self._MAX_BOOTSTRAP_RETRIES = 3
         self._task_inactivity_timeout_secs = self._load_task_inactivity_timeout_secs()
+        self._HOST_HEALTH_CHECK_INTERVAL_SECS = 300  # check every 5 minutes
+        self._HOST_HEALTH_SSH_TIMEOUT = 10
+        self._last_host_health_check = 0.0
         os.makedirs(self._log_dir, exist_ok=True)
         if self.startup_script:
             self._snapshot_startup_script()
@@ -188,11 +193,27 @@ class Worker:
                     bootstrap_success, bootstrap_preempted = self._ensure_bootstrap_ready()
                     if not bootstrap_success:
                         if bootstrap_preempted:
+                            self._bootstrap_failures = 0
                             self._handle_preemption()
                         else:
-                            logger.warning("Worker bootstrap failed on TPU %s; retrying in 30s",
-                                           self.worker_id)
-                            time.sleep(30)
+                            self._bootstrap_failures += 1
+                            if self._bootstrap_failures >= self._MAX_BOOTSTRAP_RETRIES:
+                                logger.warning(
+                                    "Bootstrap failed %d times on TPU %s; deleting and recreating",
+                                    self._bootstrap_failures, self.worker_id)
+                                self._record_timeline("bootstrap_max_retries_exceeded",
+                                                      failures=self._bootstrap_failures)
+                                self._bootstrap_failures = 0
+                                self._handle_preemption()
+                            else:
+                                logger.warning(
+                                    "Worker bootstrap failed on TPU %s (attempt %d/%d); retrying in 30s",
+                                    self.worker_id, self._bootstrap_failures, self._MAX_BOOTSTRAP_RETRIES)
+                                time.sleep(30)
+                        continue
+                    self._bootstrap_failures = 0
+                    if not self._check_host_health():
+                        self._handle_preemption()
                         continue
                     task = self.queue.claim(self.accelerator, self.zone, self.worker_id)
                     if task is None:
@@ -200,21 +221,37 @@ class Worker:
                         time.sleep(30)
                         continue
 
+                    self._record_timeline(
+                        "task_started",
+                        task_id=task["id"],
+                        task_name=task.get("name", task["id"]),
+                    )
                     self._send_task_notification(task, "BEGIN")
                     outcome, failure_reason = self._run_task(task)
 
                     if outcome == "deleted":
+                        self._record_timeline("task_released", task_id=task["id"], reason="deleted")
                         logger.info("Task %s was deleted while running; skipping queue release", task["id"])
                         continue
                     if outcome == "paused":
+                        self._record_timeline("task_released", task_id=task["id"], reason="paused")
                         logger.info("Task %s was paused while running; leaving it paused", task["id"])
                         continue
                     if failure_reason in ("preempted", "infra"):
+                        self._record_timeline(
+                            "task_released",
+                            task_id=task["id"],
+                            reason=failure_reason,
+                        )
                         # Infrastructure failure — re-queue without burning a retry
                         self.queue.release(task["id"], "interrupted")
                         if failure_reason == "preempted":
                             self._handle_preemption()
                     else:
+                        self._record_timeline(
+                            "task_completed" if outcome == "done" else "task_failed",
+                            task_id=task["id"],
+                        )
                         final_task = self.queue.release(task["id"], "done" if outcome == "done" else "failed")
                         if outcome == "done":
                             self._send_task_notification(final_task or task, "END")
@@ -260,7 +297,7 @@ class Worker:
             return
         self._record_timeline("tpu_status", status=status)
         logger.info("TPU %s status=%s, provisioning...", self.worker_id, status)
-        if status not in ("NOT_FOUND", "CREATING"):
+        if status not in ("NOT_FOUND", "CREATING", "PROVISIONING", "WAITING_FOR_RESOURCES"):
             self._record_timeline("tpu_delete_requested", reason=f"status={status}")
             self.tpu.delete()
             self._record_timeline("tpu_deleted", reason=f"status={status}")
@@ -271,16 +308,71 @@ class Worker:
                     f"TPU {self.worker_id} still exists after delete "
                     f"(status={post_delete_status}); refusing to create duplicate"
                 )
-        if status != "CREATING":
+        if status not in ("CREATING", "PROVISIONING", "WAITING_FOR_RESOURCES"):
             self._record_timeline("tpu_requesting")
             self.tpu.request()
-        self.tpu.wait_ready()
+        self.tpu.wait_ready(
+            status_callback=lambda s: self._record_timeline("tpu_status", status=s)
+        )
         self._bootstrap_complete = False
         self._record_timeline("tpu_ready")
+
+    def _check_host_health(self) -> bool:
+        """Check SSH reachability of all TPU hosts. Returns True if all healthy."""
+        now = time.monotonic()
+        if now - self._last_host_health_check < self._HOST_HEALTH_CHECK_INTERVAL_SECS:
+            return True
+        self._last_host_health_check = now
+
+        num_workers = self.tpu.get_num_workers()
+        if num_workers <= 1:
+            return True
+
+        logger.info("Running host health check on %d workers for TPU %s", num_workers, self.worker_id)
+        failed_workers: list[int] = []
+        lock = threading.Lock()
+
+        def check_worker(worker_index: int) -> None:
+            result = subprocess.run(
+                self._ssh_cmd(worker_index, "true"),
+                capture_output=True, text=True, timeout=60,
+            )
+            if result.returncode != 0:
+                with lock:
+                    failed_workers.append(worker_index)
+
+        try:
+            with ThreadPoolExecutor(
+                max_workers=num_workers,
+                thread_name_prefix="jobman-health-check",
+            ) as executor:
+                futures = [executor.submit(check_worker, i) for i in range(num_workers)]
+                for f in futures:
+                    f.result()
+        except Exception as e:
+            logger.warning("Host health check failed with exception: %s", e)
+            return True  # don't act on check failures themselves
+
+        if failed_workers:
+            failed_workers.sort()
+            logger.warning(
+                "Host health check FAILED: %d/%d workers unreachable on TPU %s: %s",
+                len(failed_workers), num_workers, self.worker_id, failed_workers,
+            )
+            self._record_timeline(
+                "host_health_check_failed",
+                unreachable_workers=failed_workers,
+                total_workers=num_workers,
+            )
+            return False
+
+        logger.info("Host health check passed: all %d workers reachable", num_workers)
+        return True
 
     def _handle_preemption(self) -> None:
         logger.info("Handling preemption for TPU %s", self.worker_id)
         self._bootstrap_complete = False
+        self._last_host_health_check = 0.0
         try:
             self._record_timeline("tpu_delete_requested", reason="preemption_recovery")
             self.tpu.delete()
@@ -439,7 +531,7 @@ class Worker:
         if not self.startup_script:
             return True, False
 
-        remote_setup = "/tmp/jobman_worker_setup.sh"
+        remote_setup = "~/jobman_worker_setup.sh"
         display_script = self._display_startup_script()
         self._record_timeline("bootstrap_started",
                               script=display_script,
@@ -695,7 +787,7 @@ class Worker:
 
         num_workers = self.tpu.get_num_workers()
         script_path = task["script"]
-        remote_script = f"/tmp/jobman_{task_id}.sh"
+        remote_script = f"~/jobman_{task_id}.sh"
         control_state = self._task_control_state(task_id)
         if control_state is not None:
             return control_state, None

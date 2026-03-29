@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 SOURCE_SCRIPT="${1:-$REPO_ROOT/scripts/setup/maxtext_bootstrap.sh}"
-LOG_ROOT="${JOBMAN_LOG_DIR:-/scratch/yx3038/pruning/jobman-lite/logs}"
+LOG_ROOT="${JOBMAN_LOG_DIR:-$(pwd)/logs}"
 WORKER_ROOT="$LOG_ROOT/workers"
 
 if [[ ! -f "$SOURCE_SCRIPT" ]]; then

@@ -96,7 +96,6 @@ ensure_mount_dir() {
 
 ensure_ramdisk() {
   log "Checking RAM disk at $RAMDISK_PATH"
-  require_command mountpoint
   if [[ -d "$RAMDISK_PATH" ]]; then
     log "Mount directory exists: $RAMDISK_PATH"
   else
@@ -104,12 +103,16 @@ ensure_ramdisk() {
     log "Created mount directory: $RAMDISK_PATH"
   fi
 
-  if mountpoint -q "$RAMDISK_PATH"; then
+  if is_mounted "$RAMDISK_PATH"; then
     log "RAM disk already mounted at $RAMDISK_PATH"
+    sudo chmod 1777 "$RAMDISK_PATH"
+    if [[ -d "$RAMDISK_PATH/gcsfuse-file-cache" ]]; then
+      sudo chmod -R 1777 "$RAMDISK_PATH/gcsfuse-file-cache"
+    fi
     return
   fi
 
-  sudo mount -t tmpfs -o "size=$RAMDISK_SIZE" tmpfs "$RAMDISK_PATH"
+  sudo mount -t tmpfs -o "size=$RAMDISK_SIZE,mode=1777" tmpfs "$RAMDISK_PATH"
   log "Mounted RAM disk at $RAMDISK_PATH with size $RAMDISK_SIZE"
 }
 
@@ -137,17 +140,33 @@ ensure_gcsfuse() {
   log "gcsfuse installed successfully"
 }
 
+is_mounted() {
+  local mount_path="$1"
+  # Check if the kernel thinks it's a mount point
+  if mountpoint -q "$mount_path" 2>/dev/null || \
+     grep -qE " ${mount_path} " /proc/mounts 2>/dev/null; then
+    # Verify the mount is actually functional (not stale FUSE)
+    if ls "$mount_path" >/dev/null 2>&1; then
+      return 0
+    fi
+    # Stale mount detected — try to clean it up
+    warn "Stale mount detected at $mount_path, attempting to unmount"
+    fusermount -u "$mount_path" 2>/dev/null || sudo umount -l "$mount_path" 2>/dev/null || true
+    return 1
+  fi
+  return 1
+}
+
 mount_bucket_if_needed() {
   local bucket_name="$1"
   local mount_path="$2"
   shift 2
 
   log "Checking bucket mount $bucket_name -> $mount_path"
-  require_command mountpoint
   ensure_gcsfuse
   ensure_mount_dir "$mount_path"
 
-  if mountpoint -q "$mount_path"; then
+  if is_mounted "$mount_path"; then
     log "Bucket already mounted at $mount_path"
     return
   fi

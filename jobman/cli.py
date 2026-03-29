@@ -321,7 +321,7 @@ def worker():
 @click.option("--allocation-mode", "-m", default="queued-resources", type=MODE_CHOICES, show_default=True)
 @click.option("--startup-script", "-s", type=click.Path(exists=True, dir_okay=False, path_type=Path),
               default=None, help="Optional bootstrap script to run on all TPU hosts before claiming tasks")
-@click.option("--ssh-user", "-u", default="zephyr", help="SSH username for connecting to TPU VMs (default: gcloud default)")
+@click.option("--ssh-user", "-u", default="yx3038", help="SSH username for connecting to TPU VMs (default: gcloud default)")
 @click.option("--debug", is_flag=True, default=False,
               help="Run interactively in the foreground with live output and no log files")
 def worker_start(accelerator, zone, tpu_name, pricing, allocation_mode, startup_script, ssh_user, debug):
@@ -576,7 +576,7 @@ def worker_delete(worker_refs, delete_all, accelerator, zone):
 @click.argument("worker_ref")
 @click.option("--worker-index", "-w", default=0, show_default=True,
               help="TPU worker index (for multi-host TPUs)")
-@click.option("--ssh-user", "-u", default="zephyr", help="SSH username for connecting to the TPU VM")
+@click.option("--ssh-user", "-u", default="yx3038", help="SSH username for connecting to the TPU VM")
 def worker_ssh(worker_ref, worker_index, ssh_user):
     """Open an interactive SSH session to a worker (by name or index from 'jobman status')."""
     registry = _read_workers()
@@ -971,6 +971,25 @@ def status(accelerator, zone, live_only, workers_only, task_only):
         retry = f"{t.get('fail_count', 0)}/{t.get('max_retries', 3)}"
         click.echo(f"{idx:<4} {t['id']:<18} {t['name']:<40} {t['status']:<12} {retry:<7} "
                    f"{t['accelerator']:<12} {t.get('zone',''):<20} {worker_id}")
+
+
+@cli.command("availability")
+@click.option("--accelerator", "-a", default=None, help="Filter by accelerator type, e.g. v4-8")
+@click.option("--zone", "-z", default=None, help="Filter by GCP zone, e.g. us-central2-b")
+@click.option("--prefix", "-p", default=None, help="Filter workers by name prefix, e.g. yufeng-")
+def availability(accelerator, zone, prefix):
+    """Show TPU availability profile from timeline data."""
+    from .availability import compute_availability, format_report
+
+    stats_by_worker, stats_by_accel = compute_availability(
+        worker_prefix=prefix,
+        accelerator=accelerator,
+        zone=zone,
+    )
+    if not stats_by_worker:
+        click.echo("No timeline data found.")
+        return
+    click.echo(format_report(stats_by_worker, stats_by_accel))
 
 
 @task.command("show")
@@ -1528,9 +1547,8 @@ def _sync_workers_from_tmux() -> dict:
             "status": "running",
             "registered": first["time"],
             "pid": 0,
+            "ssh_user": "yx3038",
         }
-        if first.get("ssh_user"):
-            entry["ssh_user"] = first["ssh_user"]
         registry[worker_id] = entry
 
     return registry
