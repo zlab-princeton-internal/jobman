@@ -731,10 +731,11 @@ def worker_show(worker_ref):
         snapshot_path = os.path.join(jobman_log_dir(), "workers", w["worker_id"], os.path.basename(startup_script))
         click.echo(f"Setup             : {snapshot_path}")
     process_status = _process_status(w)
-    vm_status, qr_status = _query_tpu_statuses(w)
+    vm_status, qr_status, health_status = _query_tpu_statuses(w)
     click.echo(f"Process status    : {process_status}")
     click.echo(f"VM status         : {vm_status}")
     click.echo(f"QR status         : {qr_status}")
+    click.echo(f"Health status     : {health_status}")
     click.echo(f"Attach with       : tmux attach -t jobman_{w['worker_id']}")
     tpu_url = _tpu_console_url(w)
     if tpu_url:
@@ -925,10 +926,10 @@ def status(accelerator, zone, live_only, workers_only, task_only):
             click.echo("Fetching TPU status from GCP...", err=True)
             statuses = _fetch_worker_statuses({w["worker_id"]: w for _, w in filtered_workers})
             running_tasks_by_worker = _running_tasks_by_worker()
-            click.echo(f"{'#':<4} {'WORKER':<28} {'ACCELERATOR':<12} {'ZONE':<20} {'STATUS':<10} {'VM':<10} {'QR'}")
+            click.echo(f"{'#':<4} {'WORKER':<28} {'ACCELERATOR':<12} {'ZONE':<20} {'STATUS':<10} {'VM':<12} {'QR':<14} HEALTH")
             rows = []
             for idx, w in filtered_workers:
-                pstatus, vm_status, qr_status = statuses.get(w["worker_id"], ("?", "?", "?"))
+                pstatus, vm_status, qr_status, health_status = statuses.get(w["worker_id"], ("?", "?", "?", "UNKNOWN"))
                 if live_only and qr_status.upper() != "ACTIVE":
                     continue
                 display_status = _worker_display_status(
@@ -936,13 +937,14 @@ def status(accelerator, zone, live_only, workers_only, task_only):
                     process_status=pstatus,
                     vm_status=vm_status,
                     qr_status=qr_status,
+                    health_status=health_status,
                     has_running_task=w["worker_id"] in running_tasks_by_worker,
                 )
-                rows.append((idx, w, display_status, vm_status, qr_status))
+                rows.append((idx, w, display_status, vm_status, qr_status, health_status))
             if rows:
-                for idx, w, display_status, vm_status, qr_status in rows:
+                for idx, w, display_status, vm_status, qr_status, health_status in rows:
                     click.echo(f"{idx:<4} {w['worker_id']:<28} {w['accelerator']:<12} {w['zone']:<20} "
-                               f"{display_status:<10} {vm_status:<10} {qr_status}")
+                               f"{display_status:<10} {vm_status:<12} {qr_status:<14} {health_status}")
             else:
                 click.echo("  (none)")
         else:
@@ -1070,7 +1072,7 @@ def _process_status(w: dict) -> str:
     return stored
 
 
-def _query_tpu_statuses(w: dict) -> tuple[str, str]:
+def _query_tpu_statuses(w: dict) -> tuple[str, str, str]:
     """Query live TPU VM and queued-resource states from GCP."""
     try:
         tpu = TPU(
@@ -1079,9 +1081,9 @@ def _query_tpu_statuses(w: dict) -> tuple[str, str]:
             accelerator=w["accelerator"],
             mode=w.get("mode", "tpu-vm"),
         )
-        return tpu.vm_status(), tpu.queued_resource_status()
+        return tpu.vm_status(), tpu.queued_resource_status(), tpu.health_status()
     except Exception:
-        return "UNKNOWN", "UNKNOWN"
+        return "UNKNOWN", "UNKNOWN", "UNKNOWN"
 
 
 def _host0_ip(worker: dict) -> str:
@@ -1133,20 +1135,20 @@ def _host0_ip(worker: dict) -> str:
 
 def _fetch_worker_statuses(workers: dict) -> dict:
     """Fetch process + TPU status for all workers in parallel.
-    Returns {worker_id: (process_status, vm_status, qr_status)}.
+    Returns {worker_id: (process_status, vm_status, qr_status, health_status)}.
     """
     results = {}
 
     def fetch_one(w):
-        vm_status, qr_status = _query_tpu_statuses(w)
-        return w["worker_id"], _process_status(w), vm_status, qr_status
+        vm_status, qr_status, health_status = _query_tpu_statuses(w)
+        return w["worker_id"], _process_status(w), vm_status, qr_status, health_status
 
     with ThreadPoolExecutor(max_workers=min(len(workers), 8)) as ex:
         futures = {ex.submit(fetch_one, w): w["worker_id"] for w in workers.values()}
         with click.progressbar(length=len(futures), label="Fetching TPU status", show_pos=True) as bar:
             for fut in as_completed(futures):
-                wid, pstatus, vm_status, qr_status = fut.result()
-                results[wid] = (pstatus, vm_status, qr_status)
+                wid, pstatus, vm_status, qr_status, health_status = fut.result()
+                results[wid] = (pstatus, vm_status, qr_status, health_status)
                 bar.update(1)
 
     return results
@@ -1168,15 +1170,19 @@ def _worker_display_status(
     process_status: str,
     vm_status: str,
     qr_status: str,
+    health_status: str = "UNKNOWN",
     has_running_task: bool,
 ) -> str:
     """Return the user-facing worker status shown by `jobman status`."""
     process = (process_status or "").lower()
     vm = (vm_status or "").upper()
     qr = (qr_status or "").upper()
+    health = (health_status or "").upper()
 
     if process in {"dead", "stopped"}:
         return process
+    if vm == "UNHEALTHY" or health == "UNHEALTHY":
+        return "unhealthy"
     if qr != "ACTIVE" or vm in {"", "UNKNOWN", "CREATING", "NOT_FOUND"}:
         return "pending"
     if process == "setup":

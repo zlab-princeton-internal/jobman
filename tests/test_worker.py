@@ -129,6 +129,32 @@ class WorkerTests(unittest.TestCase):
         worker.tpu.request.assert_called_once()
         worker.tpu.wait_ready.assert_called_once()
 
+    def test_ensure_tpu_ready_recreates_unhealthy_tpu(self):
+        worker = self._make_worker()
+        worker.tpu = Mock()
+        worker.tpu.status.side_effect = ["UNHEALTHY", "NOT_FOUND"]
+
+        worker._ensure_tpu_ready()
+
+        worker.tpu.delete.assert_called_once()
+        worker.tpu.request.assert_called_once()
+        worker.tpu.wait_ready.assert_called_once()
+
+    def test_ensure_tpu_ready_recreates_when_wait_ready_turns_unhealthy(self):
+        worker = self._make_worker()
+        worker.tpu = Mock()
+        worker.tpu.status.side_effect = ["PROVISIONING", "NOT_FOUND"]
+        worker.tpu.wait_ready.side_effect = [
+            RuntimeError("TPU v4-8-us-central2-b-00001 entered unhealthy state: maintenance event"),
+            None,
+        ]
+
+        worker._ensure_tpu_ready()
+
+        self.assertEqual(worker.tpu.delete.call_count, 1)
+        self.assertEqual(worker.tpu.request.call_count, 1)
+        self.assertEqual(worker.tpu.wait_ready.call_count, 2)
+
     def test_run_records_task_lifecycle_events(self):
         worker = self._make_worker()
         task = {"id": "task-1", "name": "demo-task"}

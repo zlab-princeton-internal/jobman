@@ -325,6 +325,18 @@ class CLITests(unittest.TestCase):
 
         self.assertEqual(status, "running")
 
+    def test_worker_display_status_unhealthy_when_health_flags_issue(self):
+        status = _worker_display_status(
+            {"status": "running"},
+            process_status="running",
+            vm_status="READY",
+            qr_status="ACTIVE",
+            health_status="UNHEALTHY",
+            has_running_task=False,
+        )
+
+        self.assertEqual(status, "unhealthy")
+
     def test_worker_start_debug_execs_in_foreground(self):
         with patch("jobman.cli.os.execvp", side_effect=SystemExit(0)) as execvp:
             result = self.runner.invoke(

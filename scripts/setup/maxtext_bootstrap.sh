@@ -66,7 +66,7 @@ bucket_for_zone() {
   local zone="$1"
   case "$zone" in
     us-central2-b) printf '%s\n' "llm_pruning_us_central2_b" ;;
-    us-central1-b) printf '%s\n' "llm_pruning_us_central1" ;;
+    us-central1-a|us-central1-b) printf '%s\n' "llm_pruning_us_central1" ;;
     us-east5-a|us-east5-b) printf '%s\n' "llm_pruning_us_east5" ;;
     *)
       log "ERROR: no bucket configured for zone $zone"

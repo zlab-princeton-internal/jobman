@@ -298,23 +298,49 @@ class Worker:
         self._record_timeline("tpu_status", status=status)
         logger.info("TPU %s status=%s, provisioning...", self.worker_id, status)
         if status not in ("NOT_FOUND", "CREATING", "PROVISIONING", "WAITING_FOR_RESOURCES"):
-            self._record_timeline("tpu_delete_requested", reason=f"status={status}")
+            self._recreate_tpu(reason=f"status={status}")
+            return
+        try:
+            self.tpu.wait_ready(
+                status_callback=lambda s: self._record_timeline("tpu_status", status=s)
+            )
+        except RuntimeError as exc:
+            if "UNHEALTHY" not in str(exc).upper():
+                raise
+            logger.warning("TPU %s became unhealthy while waiting for readiness: %s", self.worker_id, exc)
+            self._recreate_tpu(reason=f"wait_ready_unhealthy:{exc}")
+
+    def _recreate_tpu(self, *, reason: str) -> None:
+        self._record_timeline("tpu_delete_requested", reason=reason)
+        self.tpu.delete()
+        self._record_timeline("tpu_deleted", reason=reason)
+        # Verify the resource is actually gone before creating a new one.
+        post_delete_status = self.tpu.status()
+        if post_delete_status not in ("NOT_FOUND", "UNKNOWN"):
+            raise RuntimeError(
+                f"TPU {self.worker_id} still exists after delete "
+                f"(status={post_delete_status}); refusing to create duplicate"
+            )
+        self._record_timeline("tpu_requesting", reason=reason)
+        self.tpu.request()
+        try:
+            self.tpu.wait_ready(
+                status_callback=lambda s: self._record_timeline("tpu_status", status=s)
+            )
+        except RuntimeError as exc:
+            if "UNHEALTHY" not in str(exc).upper():
+                raise
+            logger.warning("TPU %s remained unhealthy after recreate attempt: %s", self.worker_id, exc)
+            self._record_timeline("tpu_delete_requested", reason=f"{reason}:retry")
             self.tpu.delete()
-            self._record_timeline("tpu_deleted", reason=f"status={status}")
-            # Verify the resource is actually gone before creating a new one
-            post_delete_status = self.tpu.status()
-            if post_delete_status not in ("NOT_FOUND", "UNKNOWN"):
-                raise RuntimeError(
-                    f"TPU {self.worker_id} still exists after delete "
-                    f"(status={post_delete_status}); refusing to create duplicate"
-                )
-        if status not in ("CREATING", "PROVISIONING", "WAITING_FOR_RESOURCES"):
-            self._record_timeline("tpu_requesting")
+            self._record_timeline("tpu_deleted", reason=f"{reason}:retry")
+            self._record_timeline("tpu_requesting", reason=f"{reason}:retry")
             self.tpu.request()
-        self.tpu.wait_ready(
-            status_callback=lambda s: self._record_timeline("tpu_status", status=s)
-        )
+            self.tpu.wait_ready(
+                status_callback=lambda s: self._record_timeline("tpu_status", status=s)
+            )
         self._bootstrap_complete = False
+        self._last_host_health_check = 0.0
         self._record_timeline("tpu_ready")
 
     def _check_host_health(self) -> bool:
@@ -1020,9 +1046,9 @@ class Worker:
 
     def _is_preempted(self) -> bool:
         status = self.tpu.status()
-        if status in ("PREEMPTED", "TERMINATED", "NOT_FOUND", "SUSPENDED", "FAILED"):
+        if status in ("PREEMPTED", "TERMINATED", "NOT_FOUND", "SUSPENDED", "FAILED", "UNHEALTHY"):
             self._record_timeline("tpu_unavailable", status=status)
-        return status in ("PREEMPTED", "TERMINATED", "NOT_FOUND", "SUSPENDED", "FAILED")
+        return status in ("PREEMPTED", "TERMINATED", "NOT_FOUND", "SUSPENDED", "FAILED", "UNHEALTHY")
 
     def _record_timeline(self, event: str, **fields) -> None:
         entry = {"time": _now(), "event": event, "worker_id": self.worker_id}
