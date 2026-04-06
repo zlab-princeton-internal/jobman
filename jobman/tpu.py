@@ -65,7 +65,9 @@ def _run(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess:
     result = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if result.returncode != 0:
         detail = _command_output(result) or "no stdout/stderr"
-        logger.warning("gcloud command failed (%d): %s\n%s", result.returncode, cmd_str, detail)
+        # Suppress warning for NOT_FOUND errors (expected for non-existent resources)
+        if "NOT_FOUND" not in detail:
+            logger.warning("gcloud command failed (%d): %s\n%s", result.returncode, cmd_str, detail)
         if check:
             raise RuntimeError(
                 f"Command failed ({result.returncode}): {cmd_str}\n{detail}"
