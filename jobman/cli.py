@@ -634,16 +634,15 @@ def worker_sync(zone, startup_script):
     recovered_tmux = _sync_workers_from_tmux()
 
     # Determine zones to query
+    default_zones = {"us-central1-b", "us-central2-b", "us-east5-b", "us-central1-a", "us-east5-a"}
     if zone:
         zones = list(zone)
     else:
-        zones = sorted({
+        zones = sorted(default_zones | {
             w["zone"] for w in existing.values() if w.get("zone")
         } | {
             w["zone"] for w in recovered_tmux.values() if w.get("zone")
         })
-    if not zones:
-        zones = ["us-central1-b", "us-central2-b", "us-east5-b"]
 
     # Discover resources from GCP
     owner = _get_owner_prefix()
