@@ -1571,6 +1571,58 @@ def _get_owner_prefix() -> str | None:
         return None
 
 
+def _extract_accelerator_from_gcp_qr(item: dict) -> tuple[str, str]:
+    """Extract accelerator type and node ID from a GCP queued-resource JSON.
+
+    Returns (accelerator, node_id) where either may be "".
+    Handles multiple GCP API response formats including v5p resources.
+    """
+    # Try to extract node_id with fallbacks
+    node_id = ""
+    try:
+        node_spec = item.get("tpu", {}).get("nodeSpec")
+        if isinstance(node_spec, list) and node_spec:
+            node_id = node_spec[0].get("nodeId", "")
+    except (KeyError, IndexError, TypeError):
+        pass
+
+    # Extract accelerator from multiple possible paths
+    accelerator = ""
+
+    # Path 1: Top-level acceleratorType
+    if item.get("acceleratorType"):
+        accelerator = str(item["acceleratorType"])
+
+    # Path 2: nodeSpec as dict with acceleratorType
+    if not accelerator:
+        try:
+            node_spec = item.get("tpu", {}).get("nodeSpec")
+            if isinstance(node_spec, dict) and node_spec.get("acceleratorType"):
+                accelerator = str(node_spec["acceleratorType"])
+        except (KeyError, TypeError):
+            pass
+
+    # Path 3: nodeSpec[0]["node"]["acceleratorType"] (standard path for v4/v5e)
+    if not accelerator:
+        try:
+            node_spec = item.get("tpu", {}).get("nodeSpec")
+            if isinstance(node_spec, list) and node_spec:
+                accelerator = str(node_spec[0]["node"]["acceleratorType"])
+        except (KeyError, IndexError, TypeError):
+            pass
+
+    # Path 4: nodeSpecs (plural) with acceleratorType (for some v5p resources)
+    if not accelerator:
+        try:
+            node_specs = item.get("tpu", {}).get("nodeSpecs")
+            if isinstance(node_specs, list) and node_specs:
+                accelerator = str(node_specs[0]["node"]["acceleratorType"])
+        except (KeyError, IndexError, TypeError):
+            pass
+
+    return accelerator, node_id
+
+
 def _discover_workers_from_gcp(zones: list[str], owner: str) -> dict:
     """Query GCP queued-resources list across *zones* and return a registry
     of resources whose name starts with *owner*.
@@ -1598,26 +1650,31 @@ def _discover_workers_from_gcp(zones: list[str], owner: str) -> dict:
                 qr_name = item["name"].split("/")[-1]
                 if not qr_name.startswith(owner):
                     continue
-                # Extract node-id (the TPU VM name)
-                try:
-                    node_id = item["tpu"]["nodeSpec"][0]["nodeId"]
-                except (KeyError, IndexError, TypeError):
+
+                # Extract accelerator and node-id with fallbacks for different GCP API formats
+                accelerator, node_id = _extract_accelerator_from_gcp_qr(item)
+                if not node_id:
                     node_id = qr_name
-                # Extract accelerator
-                try:
-                    accelerator = item["tpu"]["nodeSpec"][0]["node"]["acceleratorType"]
-                except (KeyError, IndexError, TypeError):
-                    accelerator = ""
+
                 # Extract state
                 state = item.get("state", {})
                 if isinstance(state, dict):
                     state = state.get("state", "UNKNOWN")
                 state = str(state).upper()
+
                 # Extract runtime version
+                tpu_version = ""
                 try:
-                    tpu_version = item["tpu"]["nodeSpec"][0]["node"]["runtimeVersion"]
+                    node_spec = item.get("tpu", {}).get("nodeSpec")
+                    if isinstance(node_spec, list) and node_spec:
+                        tpu_version = node_spec[0].get("node", {}).get("runtimeVersion", "")
                 except (KeyError, IndexError, TypeError):
-                    tpu_version = resolve_tpu_version(accelerator) if accelerator else ""
+                    pass
+
+                # If we couldn't extract tpu_version from GCP, derive from accelerator
+                if not tpu_version and accelerator:
+                    tpu_version = resolve_tpu_version(accelerator)
+
                 # Determine pricing from presence of "spot" key
                 pricing = "spot" if "spot" in item else "standard"
 
