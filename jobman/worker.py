@@ -226,6 +226,7 @@ class Worker:
     _TASK_CONTROL_POLL_INTERVAL = 5
     _LOOP_ERROR_SLEEP_SECS = 10
     _DEFAULT_TASK_INACTIVITY_TIMEOUT_SECS = 1800
+    _PREFLIGHT_MEMORY_THRESHOLD_KB = 1_048_576  # 1 GB
 
     def __init__(
         self,
@@ -367,6 +368,9 @@ class Worker:
                     # taking new tasks immediately.
                     if not self._check_host_health(force=True):
                         self._recreate_tpu(reason="host_health_check_failed")
+                        continue
+                    if not self._run_preflight_checks():
+                        self._recreate_tpu(reason="preflight_check_failed")
                         continue
                     task = self.queue.claim(self.accelerator, self.zone, self.worker_id)
                     if task is None:
@@ -553,6 +557,129 @@ class Worker:
             return False
 
         logger.info("Host health check passed: all %d workers reachable", num_workers)
+        return True
+
+    def _run_preflight_checks(self) -> bool:
+        """Run pre-flight checks on all workers before claiming a task.
+
+        For multi-host pods, verifies on each worker:
+        - Coordination endpoint reachability (GCE metadata server)
+        - Available host memory exceeds threshold
+        - GCS connectivity (storage.googleapis.com:443)
+
+        Returns True if all checks pass, False otherwise.
+        Single-host pods skip these checks.
+        """
+        num_workers = self.tpu.get_num_workers()
+        if num_workers <= 1:
+            return True
+
+        logger.info(
+            "Running pre-flight checks on %d workers for TPU %s",
+            num_workers, self.worker_id,
+        )
+
+        failures: list[tuple[int, str]] = []
+        lock = threading.Lock()
+
+        def check_worker(worker_index: int) -> None:
+            # 1. Coordination endpoint (GCE metadata server as proxy)
+            coord_probe = (
+                "python3 -c \""
+                "import urllib.request; "
+                "r = urllib.request.Request("
+                "'http://metadata.google.internal/computeMetadata/v1/instance/hostname', "
+                "headers={'Metadata-Flavor': 'Google'}); "
+                "urllib.request.urlopen(r, timeout=5).read(); "
+                "print('OK')\""
+            )
+            cmd = self._ssh_cmd(worker_index, coord_probe)
+            try:
+                result = subprocess.run(
+                    cmd, capture_output=True, text=True, timeout=30,
+                )
+            except subprocess.TimeoutExpired:
+                with lock:
+                    failures.append((worker_index, "coordination_timeout"))
+                return
+            if result.returncode != 0 or "OK" not in (result.stdout or ""):
+                with lock:
+                    failures.append((worker_index, "coordination_unreachable"))
+                return
+
+            # 2. Available host memory
+            mem_cmd = self._ssh_cmd(
+                worker_index, "awk '/MemAvailable/{print $2}' /proc/meminfo",
+            )
+            try:
+                result = subprocess.run(
+                    mem_cmd, capture_output=True, text=True, timeout=30,
+                )
+            except subprocess.TimeoutExpired:
+                with lock:
+                    failures.append((worker_index, "memory_check_timeout"))
+                return
+            if result.returncode == 0:
+                try:
+                    available_kb = int(result.stdout.strip())
+                    if available_kb < self._PREFLIGHT_MEMORY_THRESHOLD_KB:
+                        with lock:
+                            failures.append((
+                                worker_index,
+                                f"low_memory:{available_kb}KB<{self._PREFLIGHT_MEMORY_THRESHOLD_KB}KB",
+                            ))
+                        return
+                except (ValueError, AttributeError):
+                    pass
+
+            # 3. GCS connectivity
+            gcs_probe = (
+                "python3 -c \""
+                "import socket; "
+                "s=socket.create_connection(('storage.googleapis.com', 443), timeout=10); "
+                "s.close(); "
+                "print('OK')\""
+            )
+            gcs_cmd = self._ssh_cmd(worker_index, gcs_probe)
+            try:
+                result = subprocess.run(
+                    gcs_cmd, capture_output=True, text=True, timeout=30,
+                )
+            except subprocess.TimeoutExpired:
+                with lock:
+                    failures.append((worker_index, "gcs_timeout"))
+                return
+            if result.returncode != 0 or "OK" not in (result.stdout or ""):
+                with lock:
+                    failures.append((worker_index, "gcs_unreachable"))
+                return
+
+        try:
+            with ThreadPoolExecutor(
+                max_workers=num_workers,
+                thread_name_prefix="jobman-preflight",
+            ) as executor:
+                futs = [executor.submit(check_worker, i) for i in range(num_workers)]
+                for f in futs:
+                    f.result()
+        except Exception as e:
+            logger.warning("Pre-flight check runner failed: %s", e)
+            return True  # Don't block on check infrastructure failures
+
+        if failures:
+            failures.sort()
+            logger.warning(
+                "Pre-flight checks FAILED on TPU %s: %s",
+                self.worker_id, failures,
+            )
+            self._record_timeline(
+                "preflight_check_failed",
+                failures=[(w, r) for w, r in failures],
+                total_workers=num_workers,
+            )
+            return False
+
+        logger.info("Pre-flight checks passed: all %d workers ready", num_workers)
         return True
 
     def _handle_preemption(self) -> None:

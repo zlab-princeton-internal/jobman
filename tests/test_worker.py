@@ -810,3 +810,131 @@ class WorkerTests(unittest.TestCase):
 
         self.assertEqual(outcome, "failed")
         self.assertEqual(failure_reason, "infra")
+
+    def test_preflight_checks_skip_single_host(self):
+        """Pre-flight checks should be skipped for single-host workers."""
+        worker = self._make_worker()
+        worker.tpu = Mock()
+        worker.tpu.get_num_workers.return_value = 1
+
+        result = worker._run_preflight_checks()
+
+        self.assertTrue(result)
+
+    def test_preflight_checks_pass_all_healthy(self):
+        """Pre-flight checks should pass when all workers are healthy."""
+        worker = self._make_worker()
+        worker.tpu = Mock()
+        worker.tpu.get_num_workers.return_value = 4
+
+        def run_side_effect(cmd, capture_output=True, text=True, timeout=None):
+            command = " ".join(cmd)
+            if "metadata.google.internal" in command:
+                return SimpleNamespace(returncode=0, stderr="", stdout="OK\n")
+            if "MemAvailable" in command:
+                return SimpleNamespace(returncode=0, stderr="", stdout="8000000\n")
+            if "storage.googleapis.com" in command:
+                return SimpleNamespace(returncode=0, stderr="", stdout="OK\n")
+            raise AssertionError(f"unexpected subprocess.run call: {command}")
+
+        with patch("jobman.worker.subprocess.run", side_effect=run_side_effect):
+            result = worker._run_preflight_checks()
+
+        self.assertTrue(result)
+
+    def test_preflight_checks_fail_coordination_unreachable(self):
+        """Pre-flight should fail if coordination endpoint is unreachable."""
+        worker = self._make_worker()
+        worker.tpu = Mock()
+        worker.tpu.get_num_workers.return_value = 2
+
+        def run_side_effect(cmd, capture_output=True, text=True, timeout=None):
+            command = " ".join(cmd)
+            if "metadata.google.internal" in command:
+                return SimpleNamespace(returncode=1, stderr="Connection refused", stdout="")
+            raise AssertionError(f"unexpected subprocess.run call: {command}")
+
+        with patch("jobman.worker.subprocess.run", side_effect=run_side_effect):
+            result = worker._run_preflight_checks()
+
+        self.assertFalse(result)
+
+    def test_preflight_checks_fail_low_memory(self):
+        """Pre-flight should fail if host memory is below threshold."""
+        worker = self._make_worker()
+        worker.tpu = Mock()
+        worker.tpu.get_num_workers.return_value = 2
+
+        def run_side_effect(cmd, capture_output=True, text=True, timeout=None):
+            command = " ".join(cmd)
+            if "metadata.google.internal" in command:
+                return SimpleNamespace(returncode=0, stderr="", stdout="OK\n")
+            if "MemAvailable" in command:
+                return SimpleNamespace(returncode=0, stderr="", stdout="500000\n")
+            raise AssertionError(f"unexpected subprocess.run call: {command}")
+
+        with patch("jobman.worker.subprocess.run", side_effect=run_side_effect):
+            result = worker._run_preflight_checks()
+
+        self.assertFalse(result)
+
+    def test_preflight_checks_fail_gcs_unreachable(self):
+        """Pre-flight should fail if GCS is unreachable from a worker."""
+        worker = self._make_worker()
+        worker.tpu = Mock()
+        worker.tpu.get_num_workers.return_value = 2
+
+        def run_side_effect(cmd, capture_output=True, text=True, timeout=None):
+            command = " ".join(cmd)
+            if "metadata.google.internal" in command:
+                return SimpleNamespace(returncode=0, stderr="", stdout="OK\n")
+            if "MemAvailable" in command:
+                return SimpleNamespace(returncode=0, stderr="", stdout="8000000\n")
+            if "storage.googleapis.com" in command:
+                return SimpleNamespace(returncode=1, stderr="Connection refused", stdout="")
+            raise AssertionError(f"unexpected subprocess.run call: {command}")
+
+        with patch("jobman.worker.subprocess.run", side_effect=run_side_effect):
+            result = worker._run_preflight_checks()
+
+        self.assertFalse(result)
+
+    def test_preflight_failure_skips_claim_and_recreates(self):
+        """Pre-flight failure should skip task claim and trigger TPU recreation."""
+        worker = self._make_worker()
+
+        worker._ensure_tpu_ready = Mock()
+        worker._ensure_bootstrap_ready = Mock(return_value=(True, False))
+        worker._check_host_health = Mock(return_value=True)
+        worker._run_preflight_checks = Mock(return_value=False)
+        worker._recreate_tpu = Mock(side_effect=KeyboardInterrupt())
+        worker._register = Mock()
+        worker.queue = Mock()
+
+        worker.run()
+
+        worker.queue.claim.assert_not_called()
+        worker._recreate_tpu.assert_called_once_with(reason="preflight_check_failed")
+
+    def test_preflight_checks_records_timeline_on_failure(self):
+        """Pre-flight failure should record a timeline event."""
+        worker = self._make_worker()
+        worker.tpu = Mock()
+        worker.tpu.get_num_workers.return_value = 2
+
+        timeline = []
+
+        def run_side_effect(cmd, capture_output=True, text=True, timeout=None):
+            command = " ".join(cmd)
+            if "metadata.google.internal" in command:
+                return SimpleNamespace(returncode=1, stderr="timeout", stdout="")
+            raise AssertionError(f"unexpected subprocess.run call: {command}")
+
+        with patch("jobman.worker.subprocess.run", side_effect=run_side_effect), \
+             patch.object(worker, "_record_timeline",
+                          side_effect=lambda event, **fields: timeline.append((event, fields))):
+            result = worker._run_preflight_checks()
+
+        self.assertFalse(result)
+        events = [e for e, _ in timeline]
+        self.assertIn("preflight_check_failed", events)
