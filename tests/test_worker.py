@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from jobman.worker import Worker
+from jobman.worker import Worker, _MidTaskHealthMonitor
 
 
 def _register_worker_once(state_dir: str, worker_id: str) -> None:
@@ -699,3 +699,114 @@ class WorkerTests(unittest.TestCase):
         self.assertFalse(worker._has_infra_failure_pattern(
             text="Step 100: loss=0.5, accuracy=0.9\n"
         ))
+
+    def test_run_task_midtask_tpu_unhealthy_is_infra(self):
+        """Mid-task TPU health degradation should kill the task and classify as infra failure."""
+        worker = self._make_worker()
+        worker.tpu = Mock()
+        worker.tpu.get_num_workers.return_value = 2
+        worker.tpu.status.return_value = "READY"
+        worker.tpu.health_status.return_value = "UNHEALTHY"
+        worker.tpu.health_description.return_value = "maintenance event"
+        worker._TASK_CONTROL_POLL_INTERVAL = 0
+
+        task_script = self.state_dir / "train.sh"
+        task_script.write_text("#!/bin/bash\necho train\n")
+        task = {"id": "task_health1", "name": "train", "script": str(task_script), "run_count": 1}
+
+        def run_side_effect(cmd, **kwargs):
+            command = " ".join(cmd)
+            if "scp" in command:
+                return SimpleNamespace(returncode=0, stderr="", stdout="")
+            raise AssertionError(f"unexpected subprocess.run call: {command}")
+
+        def popen_side_effect(cmd, stdout=None, stderr=None, text=None):
+            command = " ".join(cmd)
+            if "JOBMAN_TPU_NAME=" in command and "jobman_task_health1.sh" in command:
+                return SilentFakePopen(cmd, stdout=stdout, returncode=0)
+            raise AssertionError(f"unexpected subprocess.Popen call: {command}")
+
+        with patch("jobman.worker.subprocess.run", side_effect=run_side_effect), \
+             patch("jobman.worker.subprocess.Popen", side_effect=popen_side_effect), \
+             patch.object(_MidTaskHealthMonitor, 'HEALTH_CHECK_INTERVAL_SECS', 0.1), \
+             patch.object(worker, "_task_control_state", return_value=None):
+            outcome, failure_reason = worker._run_task(task)
+
+        self.assertEqual(outcome, "failed")
+        self.assertEqual(failure_reason, "infra")
+
+    def test_run_task_midtask_memory_pressure_is_infra(self):
+        """Mid-task host memory pressure should kill the task and classify as infra failure."""
+        worker = self._make_worker()
+        worker.tpu = Mock()
+        worker.tpu.get_num_workers.return_value = 2
+        worker.tpu.status.return_value = "READY"
+        worker.tpu.health_status.return_value = "HEALTHY"
+        worker._TASK_CONTROL_POLL_INTERVAL = 0
+
+        task_script = self.state_dir / "train.sh"
+        task_script.write_text("#!/bin/bash\necho train\n")
+        task = {"id": "task_memlow", "name": "train", "script": str(task_script), "run_count": 1}
+
+        def run_side_effect(cmd, **kwargs):
+            command = " ".join(cmd)
+            if "scp" in command:
+                return SimpleNamespace(returncode=0, stderr="", stdout="")
+            if "MemAvailable" in command:
+                return SimpleNamespace(returncode=0, stderr="", stdout="500000\n")
+            if "storage.googleapis.com" in command:
+                return SimpleNamespace(returncode=0, stderr="", stdout="OK\n")
+            raise AssertionError(f"unexpected subprocess.run call: {command}")
+
+        def popen_side_effect(cmd, stdout=None, stderr=None, text=None):
+            command = " ".join(cmd)
+            if "JOBMAN_TPU_NAME=" in command and "jobman_task_memlow.sh" in command:
+                return SilentFakePopen(cmd, stdout=stdout, returncode=0)
+            raise AssertionError(f"unexpected subprocess.Popen call: {command}")
+
+        with patch("jobman.worker.subprocess.run", side_effect=run_side_effect), \
+             patch("jobman.worker.subprocess.Popen", side_effect=popen_side_effect), \
+             patch.object(_MidTaskHealthMonitor, 'HEALTH_CHECK_INTERVAL_SECS', 0.1), \
+             patch.object(worker, "_task_control_state", return_value=None):
+            outcome, failure_reason = worker._run_task(task)
+
+        self.assertEqual(outcome, "failed")
+        self.assertEqual(failure_reason, "infra")
+
+    def test_run_task_midtask_gcs_unreachable_is_infra(self):
+        """Mid-task GCS unreachability should kill the task and classify as infra failure."""
+        worker = self._make_worker()
+        worker.tpu = Mock()
+        worker.tpu.get_num_workers.return_value = 2
+        worker.tpu.status.return_value = "READY"
+        worker.tpu.health_status.return_value = "HEALTHY"
+        worker._TASK_CONTROL_POLL_INTERVAL = 0
+
+        task_script = self.state_dir / "train.sh"
+        task_script.write_text("#!/bin/bash\necho train\n")
+        task = {"id": "task_gcs", "name": "train", "script": str(task_script), "run_count": 1}
+
+        def run_side_effect(cmd, **kwargs):
+            command = " ".join(cmd)
+            if "scp" in command:
+                return SimpleNamespace(returncode=0, stderr="", stdout="")
+            if "MemAvailable" in command:
+                return SimpleNamespace(returncode=0, stderr="", stdout="8000000\n")
+            if "storage.googleapis.com" in command:
+                return SimpleNamespace(returncode=1, stderr="Connection refused", stdout="")
+            raise AssertionError(f"unexpected subprocess.run call: {command}")
+
+        def popen_side_effect(cmd, stdout=None, stderr=None, text=None):
+            command = " ".join(cmd)
+            if "JOBMAN_TPU_NAME=" in command and "jobman_task_gcs.sh" in command:
+                return SilentFakePopen(cmd, stdout=stdout, returncode=0)
+            raise AssertionError(f"unexpected subprocess.Popen call: {command}")
+
+        with patch("jobman.worker.subprocess.run", side_effect=run_side_effect), \
+             patch("jobman.worker.subprocess.Popen", side_effect=popen_side_effect), \
+             patch.object(_MidTaskHealthMonitor, 'HEALTH_CHECK_INTERVAL_SECS', 0.1), \
+             patch.object(worker, "_task_control_state", return_value=None):
+            outcome, failure_reason = worker._run_task(task)
+
+        self.assertEqual(outcome, "failed")
+        self.assertEqual(failure_reason, "infra")

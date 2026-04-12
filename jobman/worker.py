@@ -85,6 +85,143 @@ def _stream_process_output(
             target.flush()
 
 
+class _MidTaskHealthMonitor:
+    """Background thread that monitors TPU/host health during task execution."""
+
+    HEALTH_CHECK_INTERVAL_SECS = 60
+    MEMORY_PRESSURE_THRESHOLD_KB = 1_048_576  # 1 GB
+
+    def __init__(self, worker, task_id: str):
+        self._worker = worker
+        self._task_id = task_id
+        self._degraded = threading.Event()
+        self._reason = ""
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread = threading.Thread(
+            target=self._monitor_loop,
+            daemon=True,
+            name=f"jobman-health-{task_id}",
+        )
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._thread.join(timeout=10)
+
+    @property
+    def is_degraded(self) -> bool:
+        return self._degraded.is_set()
+
+    @property
+    def degradation_reason(self) -> str:
+        with self._lock:
+            return self._reason
+
+    def _set_degraded(self, reason: str) -> None:
+        with self._lock:
+            if self._reason:
+                return
+            self._reason = reason
+        self._degraded.set()
+        logger.warning(
+            "Mid-task health monitor detected degradation for task %s: %s",
+            self._task_id, reason,
+        )
+
+    def _monitor_loop(self) -> None:
+        while not self._stop.wait(timeout=self.HEALTH_CHECK_INTERVAL_SECS):
+            if self._degraded.is_set():
+                break
+            try:
+                self._check_tpu_health()
+                if self._degraded.is_set():
+                    break
+                self._check_host_memory()
+                if self._degraded.is_set():
+                    break
+                self._check_gcs_reachability()
+            except Exception as e:
+                logger.debug(
+                    "Health monitor check failed for task %s: %s",
+                    self._task_id, e,
+                )
+
+    def _check_tpu_health(self) -> None:
+        health = self._worker.tpu.health_status()
+        if health == "UNHEALTHY":
+            desc = self._worker.tpu.health_description() or "unknown"
+            self._set_degraded(f"tpu_unhealthy: {desc}")
+            self._worker._record_timeline(
+                "midtask_tpu_unhealthy",
+                task_id=self._task_id,
+                health_description=desc,
+            )
+
+    def _check_host_memory(self) -> None:
+        cmd = self._worker._ssh_cmd(
+            0, "awk '/MemAvailable/{print $2}' /proc/meminfo",
+        )
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=30,
+            )
+        except subprocess.TimeoutExpired:
+            logger.debug("Memory check timed out for task %s", self._task_id)
+            return
+        if result.returncode != 0:
+            logger.debug("Memory check SSH failed for task %s", self._task_id)
+            return
+        try:
+            available_kb = int(result.stdout.strip())
+        except (ValueError, AttributeError):
+            return
+        if available_kb < self.MEMORY_PRESSURE_THRESHOLD_KB:
+            self._set_degraded(
+                f"host_memory_pressure: {available_kb}KB available "
+                f"(threshold: {self.MEMORY_PRESSURE_THRESHOLD_KB}KB)"
+            )
+            self._worker._record_timeline(
+                "midtask_memory_pressure",
+                task_id=self._task_id,
+                available_kb=available_kb,
+                threshold_kb=self.MEMORY_PRESSURE_THRESHOLD_KB,
+            )
+
+    def _check_gcs_reachability(self) -> None:
+        probe = (
+            "python3 -c \""
+            "import socket; "
+            "s=socket.create_connection(('storage.googleapis.com', 443), timeout=10); "
+            "s.close(); "
+            "print('OK')\""
+        )
+        cmd = self._worker._ssh_cmd(0, probe)
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=30,
+            )
+        except subprocess.TimeoutExpired:
+            self._set_degraded("gcs_unreachable: probe timed out")
+            self._worker._record_timeline(
+                "midtask_gcs_unreachable",
+                task_id=self._task_id,
+                detail="probe timed out",
+            )
+            return
+        if result.returncode != 0 or "OK" not in (result.stdout or ""):
+            self._set_degraded(
+                f"gcs_unreachable: probe failed (rc={result.returncode})"
+            )
+            self._worker._record_timeline(
+                "midtask_gcs_unreachable",
+                task_id=self._task_id,
+                detail=f"probe failed (rc={result.returncode})",
+            )
+
+
 class Worker:
     _TASK_CONTROL_POLL_INTERVAL = 5
     _LOOP_ERROR_SLEEP_SECS = 10
@@ -840,6 +977,7 @@ class Worker:
         control_state = self._task_control_state(task_id)
         if control_state is not None:
             return control_state, None
+        health_monitor = _MidTaskHealthMonitor(self, task_id)
         if self.debug:
             output_buffer: list[str] = []
             activity_tracker = _OutputActivityTracker()
@@ -858,6 +996,7 @@ class Worker:
             control_state = self._task_control_state(task_id)
             if control_state is not None:
                 return control_state, None
+            health_monitor.start()
             inline = f"chmod +x {remote_script} && {env_str} bash {remote_script}"
             proc = self._popen_gcloud_ssh(
                 0, inline,
@@ -876,8 +1015,9 @@ class Worker:
                 daemon=True,
             )
             tee_thread.start()
-            exit_code, control_state = self._wait_for_task_process(proc, task_id, activity_tracker)
+            exit_code, control_state = self._wait_for_task_process(proc, task_id, activity_tracker, health_monitor)
             tee_thread.join()
+            health_monitor.stop()
             if control_state is not None:
                 if control_state == "failed":
                     logger.warning(
@@ -885,6 +1025,8 @@ class Worker:
                         task_id,
                     )
                     return "failed", "task"
+                if control_state == "health_degraded":
+                    return "failed", "infra"
                 return control_state, None
         else:
             log_dir = os.path.join(self._task_log_root, task_id)
@@ -920,6 +1062,7 @@ class Worker:
                 if control_state is not None:
                     lf.write(f"=== Task {task_id} externally {control_state} before remote execution ===\n")
                     return control_state, None
+                health_monitor.start()
                 inline = f"chmod +x {remote_script} && {env_str} bash {remote_script}"
                 activity_tracker = _OutputActivityTracker()
                 proc = self._popen_gcloud_ssh(
@@ -938,8 +1081,9 @@ class Worker:
                     daemon=True,
                 )
                 tee_thread.start()
-                exit_code, control_state = self._wait_for_task_process(proc, task_id, activity_tracker)
+                exit_code, control_state = self._wait_for_task_process(proc, task_id, activity_tracker, health_monitor)
                 tee_thread.join()
+                health_monitor.stop()
                 lf.write(f"\n=== Task {task_id} ended at {_now()}, exit_code={exit_code} ===\n")
                 if control_state is not None:
                     if control_state == "failed":
@@ -949,6 +1093,9 @@ class Worker:
                             task_id,
                         )
                         return "failed", "task"
+                    if control_state == "health_degraded":
+                        lf.write(f"=== Task {task_id} terminated due to health degradation: {health_monitor.degradation_reason} ===\n")
+                        return "failed", "infra"
                     lf.write(f"=== Task {task_id} externally {control_state} during execution ===\n")
                     return control_state, None
             self._collect_remote_error_logs(log_file, log_dir, run_count, num_workers, task_id)
@@ -1073,6 +1220,7 @@ class Worker:
         proc: subprocess.Popen,
         task_id: str,
         activity_tracker: _OutputActivityTracker | None = None,
+        health_monitor: _MidTaskHealthMonitor | None = None,
     ) -> tuple[int, str | None]:
         while True:
             exit_code = proc.poll()
@@ -1082,6 +1230,19 @@ class Worker:
             if control_state is not None:
                 exit_code = self._terminate_task_process(proc, task_id, control_state)
                 return exit_code, control_state
+            if health_monitor is not None and health_monitor.is_degraded:
+                reason = health_monitor.degradation_reason
+                logger.warning(
+                    "Task %s: mid-task health degradation detected (%s); terminating",
+                    task_id, reason,
+                )
+                self._record_timeline(
+                    "task_midtask_health_kill",
+                    task_id=task_id,
+                    reason=reason,
+                )
+                exit_code = self._terminate_task_process(proc, task_id, "health_degradation")
+                return exit_code, "health_degraded"
             if (
                 activity_tracker is not None
                 and self._task_inactivity_timeout_secs is not None
