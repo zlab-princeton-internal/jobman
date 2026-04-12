@@ -160,7 +160,8 @@ class WorkerTests(unittest.TestCase):
             None,
         ]
 
-        worker._ensure_tpu_ready()
+        with patch("jobman.worker.time.sleep"):
+            worker._ensure_tpu_ready()
 
         self.assertEqual(worker.tpu.delete.call_count, 1)
         self.assertEqual(worker.tpu.request.call_count, 1)
@@ -938,3 +939,129 @@ class WorkerTests(unittest.TestCase):
         self.assertFalse(result)
         events = [e for e, _ in timeline]
         self.assertIn("preflight_check_failed", events)
+
+    def test_is_maintenance_event_from_reason(self):
+        """_is_maintenance_event detects maintenance from reason string."""
+        worker = self._make_worker()
+        worker.tpu = Mock()
+        self.assertTrue(worker._is_maintenance_event(
+            "wait_ready_unhealthy:TPU entered unhealthy state: maintenance event"
+        ))
+
+    def test_is_maintenance_event_from_health_description(self):
+        """_is_maintenance_event detects maintenance from TPU health description."""
+        worker = self._make_worker()
+        worker.tpu = Mock()
+        worker.tpu.health_description.return_value = "maintenance event scheduled"
+        self.assertTrue(worker._is_maintenance_event("status=UNHEALTHY"))
+
+    def test_is_maintenance_event_false_for_preemption(self):
+        """_is_maintenance_event returns False for non-maintenance reasons."""
+        worker = self._make_worker()
+        worker.tpu = Mock()
+        worker.tpu.health_description.return_value = ""
+        self.assertFalse(worker._is_maintenance_event("status=PREEMPTED"))
+
+    def test_recreate_tpu_maintenance_applies_backoff(self):
+        """Maintenance-triggered recreation should apply exponential backoff."""
+        worker = self._make_worker()
+        worker.tpu = Mock()
+        worker.tpu.status.return_value = "NOT_FOUND"
+        worker.tpu.health_description.return_value = "maintenance event"
+
+        sleep_calls = []
+        with patch("jobman.worker.time.sleep", side_effect=lambda s: sleep_calls.append(s)):
+            worker._recreate_tpu(reason="status=UNHEALTHY")
+
+        self.assertEqual(len(sleep_calls), 1)
+        self.assertEqual(sleep_calls[0], 60)  # first event: base backoff
+
+    def test_recreate_tpu_maintenance_exponential_backoff(self):
+        """Repeated maintenance events should increase backoff exponentially."""
+        worker = self._make_worker()
+        worker.tpu = Mock()
+        worker.tpu.status.return_value = "NOT_FOUND"
+        worker.tpu.health_description.return_value = "maintenance event"
+
+        sleep_calls = []
+        with patch("jobman.worker.time.sleep", side_effect=lambda s: sleep_calls.append(s)), \
+             patch("jobman.worker.time.time", return_value=1000.0):
+            worker._recreate_tpu(reason="status=UNHEALTHY")
+            worker._recreate_tpu(reason="status=UNHEALTHY")
+            worker._recreate_tpu(reason="status=UNHEALTHY")
+
+        self.assertEqual(sleep_calls, [60, 120, 240])
+
+    def test_recreate_tpu_no_backoff_for_non_maintenance(self):
+        """Non-maintenance recreations should not apply backoff."""
+        worker = self._make_worker()
+        worker.tpu = Mock()
+        worker.tpu.status.return_value = "NOT_FOUND"
+        worker.tpu.health_description.return_value = ""
+
+        sleep_calls = []
+        with patch("jobman.worker.time.sleep", side_effect=lambda s: sleep_calls.append(s)):
+            worker._recreate_tpu(reason="status=PREEMPTED")
+
+        self.assertEqual(len(sleep_calls), 0)
+
+    def test_recreate_tpu_maintenance_backoff_capped(self):
+        """Maintenance backoff should be capped at _MAINTENANCE_BACKOFF_MAX_SECS."""
+        worker = self._make_worker()
+        worker.tpu = Mock()
+        worker.tpu.status.return_value = "NOT_FOUND"
+        worker.tpu.health_description.return_value = "maintenance event"
+
+        sleep_calls = []
+        with patch("jobman.worker.time.sleep", side_effect=lambda s: sleep_calls.append(s)), \
+             patch("jobman.worker.time.time", return_value=1000.0):
+            for _ in range(10):
+                worker._recreate_tpu(reason="status=UNHEALTHY")
+
+        # All backoffs should be <= 1800
+        self.assertTrue(all(s <= 1800 for s in sleep_calls))
+        # Last few should be exactly 1800
+        self.assertEqual(sleep_calls[-1], 1800)
+
+    def test_recreate_tpu_maintenance_timeline_events(self):
+        """Maintenance recreation should log timeline events."""
+        worker = self._make_worker()
+        worker.tpu = Mock()
+        worker.tpu.status.return_value = "NOT_FOUND"
+        worker.tpu.health_description.return_value = "maintenance event"
+
+        timeline = []
+        with patch("jobman.worker.time.sleep"), \
+             patch.object(worker, "_record_timeline",
+                          side_effect=lambda event, **fields: timeline.append((event, fields))):
+            worker._recreate_tpu(reason="status=UNHEALTHY")
+
+        events = [e for e, _ in timeline]
+        self.assertIn("maintenance_event_detected", events)
+        self.assertIn("maintenance_backoff", events)
+
+        # Check maintenance_backoff has expected fields
+        backoff_entry = next((f for e, f in timeline if e == "maintenance_backoff"), None)
+        self.assertIsNotNone(backoff_entry)
+        self.assertEqual(backoff_entry["zone"], "us-central2-b")
+        self.assertEqual(backoff_entry["backoff_secs"], 60)
+        self.assertEqual(backoff_entry["recent_events"], 1)
+
+    def test_maintenance_backoff_resets_after_window(self):
+        """Maintenance events older than the window should be pruned."""
+        worker = self._make_worker()
+        worker.tpu = Mock()
+        worker.tpu.status.return_value = "NOT_FOUND"
+        worker.tpu.health_description.return_value = "maintenance event"
+
+        # Seed an old event outside the maintenance window
+        worker._zone_maintenance_events = [0.0]  # very old timestamp
+
+        sleep_calls = []
+        with patch("jobman.worker.time.sleep", side_effect=lambda s: sleep_calls.append(s)):
+            worker._recreate_tpu(reason="status=UNHEALTHY")
+
+        # Old event should be pruned; this is treated as the first event
+        self.assertEqual(sleep_calls[0], 60)
+        self.assertEqual(len(worker._zone_maintenance_events), 1)
+

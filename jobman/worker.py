@@ -227,6 +227,9 @@ class Worker:
     _LOOP_ERROR_SLEEP_SECS = 10
     _DEFAULT_TASK_INACTIVITY_TIMEOUT_SECS = 1800
     _PREFLIGHT_MEMORY_THRESHOLD_KB = 1_048_576  # 1 GB
+    _MAINTENANCE_BACKOFF_BASE_SECS = 60
+    _MAINTENANCE_BACKOFF_MAX_SECS = 1800  # 30 minutes
+    _MAINTENANCE_WINDOW_SECS = 3600  # 1 hour window for counting recent events
 
     def __init__(
         self,
@@ -269,6 +272,7 @@ class Worker:
         self._HOST_HEALTH_CHECK_INTERVAL_SECS = 300  # check every 5 minutes
         self._HOST_HEALTH_SSH_TIMEOUT = 10
         self._last_host_health_check = 0.0
+        self._zone_maintenance_events: list[float] = []
         os.makedirs(self._log_dir, exist_ok=True)
         if self.startup_script:
             self._snapshot_startup_script()
@@ -475,6 +479,12 @@ class Worker:
         self._record_timeline("tpu_ready")
 
     def _recreate_tpu(self, *, reason: str) -> None:
+        # Check for maintenance before deleting (health info unavailable after delete)
+        is_maintenance = self._is_maintenance_event(reason)
+        if is_maintenance:
+            self._record_timeline("maintenance_event_detected",
+                                  zone=self.zone, reason=reason)
+
         self._record_timeline("tpu_delete_requested", reason=reason)
         self.tpu.delete()
         self._record_timeline("tpu_deleted", reason=reason)
@@ -485,6 +495,22 @@ class Worker:
                 f"TPU {self.worker_id} still exists after delete "
                 f"(status={post_delete_status}); refusing to create duplicate"
             )
+
+        # Apply exponential backoff for maintenance events to avoid
+        # recreating in the same zone during a maintenance window.
+        if is_maintenance:
+            backoff = self._maintenance_backoff_secs()
+            self._record_timeline("maintenance_backoff",
+                                  zone=self.zone,
+                                  backoff_secs=backoff,
+                                  recent_events=len(self._zone_maintenance_events))
+            logger.info(
+                "Maintenance detected in zone %s (%d recent events); "
+                "backing off %ds before TPU recreation",
+                self.zone, len(self._zone_maintenance_events), backoff,
+            )
+            time.sleep(backoff)
+
         self._record_timeline("tpu_requesting", reason=reason)
         self.tpu.request()
         try:
@@ -506,6 +532,34 @@ class Worker:
         self._bootstrap_complete = False
         self._last_host_health_check = 0.0
         self._record_timeline("tpu_ready")
+
+    def _is_maintenance_event(self, reason: str) -> bool:
+        """Check if the current TPU recreation is due to a maintenance event."""
+        if "maintenance" in reason.lower():
+            return True
+        try:
+            desc = self.tpu.health_description()
+            if isinstance(desc, str) and "maintenance" in desc.lower():
+                return True
+        except Exception:
+            pass
+        return False
+
+    def _maintenance_backoff_secs(self) -> int:
+        """Calculate exponential backoff based on recent maintenance events in this zone."""
+        now = time.time()
+        # Prune events older than the maintenance window
+        self._zone_maintenance_events = [
+            t for t in self._zone_maintenance_events
+            if now - t < self._MAINTENANCE_WINDOW_SECS
+        ]
+        # Record this event
+        self._zone_maintenance_events.append(now)
+        n = len(self._zone_maintenance_events)
+        return min(
+            self._MAINTENANCE_BACKOFF_BASE_SECS * (2 ** (n - 1)),
+            self._MAINTENANCE_BACKOFF_MAX_SECS,
+        )
 
     def _check_host_health(self, *, force: bool = False) -> bool:
         """Check SSH reachability of all TPU hosts. Returns True if all healthy."""
