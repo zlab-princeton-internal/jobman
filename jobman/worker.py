@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -20,10 +21,20 @@ from .utils import dir_lock, get_logger, jobman_dir, jobman_log_dir, send_brevo_
 
 logger = get_logger(__name__)
 _RETRYABLE_FAILURE_PATTERN = "Main command finished with errors, check the logs located in"
+_REMOTE_LOG_DIR_RE = re.compile(r"check the logs located in:\s*(\S+)")
+_REMOTE_LOG_DIR_RUNNING_RE = re.compile(r"Running main command, logs located in:\s*(\S+)")
+_REMOTE_FAILED_WORKER_RE = re.compile(r"Main command failed on slice (\d+) worker (\d+)")
 _WORKER_DISCONNECT_PATTERNS = (
     "client_loop: send disconnect: Broken pipe",
     "Connection timed out during banner exchange",
     "lost connection",
+)
+_INFRA_FAILURE_PATTERNS = (
+    "DEADLINE_EXCEEDED",
+    "Barrier timed out",
+    "RESOURCE_EXHAUSTED",
+    "Out of memory",
+    "oom-kill",
 )
 
 
@@ -77,7 +88,7 @@ def _stream_process_output(
 class Worker:
     _TASK_CONTROL_POLL_INTERVAL = 5
     _LOOP_ERROR_SLEEP_SECS = 10
-    _DEFAULT_TASK_INACTIVITY_TIMEOUT_SECS = 600
+    _DEFAULT_TASK_INACTIVITY_TIMEOUT_SECS = 1800
 
     def __init__(
         self,
@@ -90,6 +101,7 @@ class Worker:
         startup_script: str | None = None,
         debug: bool = False,
         ssh_user: str | None = None,
+        ssh_identity_files: list[str] | None = None,
     ):
         self.worker_id = tpu_name
         self.accelerator = accelerator
@@ -98,6 +110,7 @@ class Worker:
         self.ssh_user = ssh_user
         self.startup_script = startup_script
         self._startup_script_snapshot = startup_script
+        self.ssh_identity_files = list(ssh_identity_files or [])
         self.tpu = TPU(
             tpu_name,
             zone,
@@ -212,8 +225,11 @@ class Worker:
                                 time.sleep(30)
                         continue
                     self._bootstrap_failures = 0
-                    if not self._check_host_health():
-                        self._handle_preemption()
+                    # Re-check host health right before claiming so a worker
+                    # that went unhealthy after the last cached check stops
+                    # taking new tasks immediately.
+                    if not self._check_host_health(force=True):
+                        self._recreate_tpu(reason="host_health_check_failed")
                         continue
                     task = self.queue.claim(self.accelerator, self.zone, self.worker_id)
                     if task is None:
@@ -300,6 +316,9 @@ class Worker:
         if status not in ("NOT_FOUND", "CREATING", "PROVISIONING", "WAITING_FOR_RESOURCES"):
             self._recreate_tpu(reason=f"status={status}")
             return
+        if status == "NOT_FOUND":
+            self._record_timeline("tpu_requesting", reason="status=NOT_FOUND")
+            self.tpu.request()
         try:
             self.tpu.wait_ready(
                 status_callback=lambda s: self._record_timeline("tpu_status", status=s)
@@ -309,6 +328,10 @@ class Worker:
                 raise
             logger.warning("TPU %s became unhealthy while waiting for readiness: %s", self.worker_id, exc)
             self._recreate_tpu(reason=f"wait_ready_unhealthy:{exc}")
+            return
+        self._bootstrap_complete = False
+        self._last_host_health_check = 0.0
+        self._record_timeline("tpu_ready")
 
     def _recreate_tpu(self, *, reason: str) -> None:
         self._record_timeline("tpu_delete_requested", reason=reason)
@@ -343,10 +366,10 @@ class Worker:
         self._last_host_health_check = 0.0
         self._record_timeline("tpu_ready")
 
-    def _check_host_health(self) -> bool:
+    def _check_host_health(self, *, force: bool = False) -> bool:
         """Check SSH reachability of all TPU hosts. Returns True if all healthy."""
         now = time.monotonic()
-        if now - self._last_host_health_check < self._HOST_HEALTH_CHECK_INTERVAL_SECS:
+        if not force and now - self._last_host_health_check < self._HOST_HEALTH_CHECK_INTERVAL_SECS:
             return True
         self._last_host_health_check = now
 
@@ -857,7 +880,11 @@ class Worker:
             tee_thread.join()
             if control_state is not None:
                 if control_state == "failed":
-                    return "failed", "preempted" if self._is_preempted() else "infra"
+                    logger.warning(
+                        "Task %s terminated due to inactivity timeout; counting it as a task failure",
+                        task_id,
+                    )
+                    return "failed", "task"
                 return control_state, None
         else:
             log_dir = os.path.join(self._task_log_root, task_id)
@@ -917,9 +944,14 @@ class Worker:
                 if control_state is not None:
                     if control_state == "failed":
                         lf.write(f"=== Task {task_id} terminated due to inactivity timeout ===\n")
-                        return "failed", "preempted" if self._is_preempted() else "infra"
+                        logger.warning(
+                            "Task %s terminated due to inactivity timeout; counting it as a task failure",
+                            task_id,
+                        )
+                        return "failed", "task"
                     lf.write(f"=== Task {task_id} externally {control_state} during execution ===\n")
                     return control_state, None
+            self._collect_remote_error_logs(log_file, log_dir, run_count, num_workers, task_id)
 
         pattern_detected = False
         if exit_code == 0:
@@ -928,9 +960,13 @@ class Worker:
             else:
                 pattern_detected = self._has_retryable_failure_pattern(log_file=log_file)
             if pattern_detected:
-                logger.warning("Task %s matched retryable failure pattern despite exit code 0", task_id)
+                logger.warning(
+                    "Task %s matched retryable failure pattern despite exit code 0; "
+                    "counting it as a task failure",
+                    task_id,
+                )
                 self._record_timeline("task_retryable_pattern_detected", task_id=task_id)
-                return "failed", "infra"
+                return "failed", "task"
 
         disconnect_detected = False
         if self.debug:
@@ -940,17 +976,61 @@ class Worker:
         if disconnect_detected:
             logger.warning("Task %s matched worker disconnect pattern; treating as infra failure", task_id)
             self._record_timeline("task_worker_disconnect_detected", task_id=task_id)
+            self._record_task_exit_code(task_id, exit_code)
             return "failed", "preempted" if self._is_preempted() else "infra"
+
+        # Check for known infra failure patterns in task output
+        if exit_code != 0:
+            infra_pattern_detected = False
+            if self.debug:
+                infra_pattern_detected = self._has_infra_failure_pattern(text="".join(output_buffer))
+            else:
+                infra_pattern_detected = self._has_infra_failure_pattern(log_file=log_file)
+            if infra_pattern_detected:
+                logger.warning("Task %s matched infra failure pattern; treating as infra failure", task_id)
+                self._record_timeline("task_infra_pattern_detected", task_id=task_id, exit_code=exit_code)
+                self._record_task_exit_code(task_id, exit_code)
+                return "failed", "infra"
 
         if exit_code == 255:
             # SSH exit 255 = connection lost, always an infrastructure issue
+            self._record_task_exit_code(task_id, exit_code)
             if self._is_preempted():
                 logger.warning("Task %s: SSH exit 255 + TPU preempted → infra failure", task_id)
                 return "failed", "preempted"
             else:
                 logger.warning("Task %s: SSH exit 255 (connection lost) → infra failure", task_id)
                 return "failed", "infra"
-        elif exit_code != 0:
+
+        # Exit 137 (SIGKILL/OOM) on multi-host tasks is almost always infra
+        if exit_code == 137 and num_workers > 1:
+            logger.warning(
+                "Task %s: exit 137 (SIGKILL/OOM) on multi-host (%d workers) → infra failure",
+                task_id, num_workers,
+            )
+            self._record_timeline("task_infra_exit137", task_id=task_id, num_workers=num_workers)
+            self._record_task_exit_code(task_id, exit_code)
+            return "failed", "infra"
+
+        # Repeated same-exit-code across runs indicates a systemic issue
+        if exit_code != 0:
+            prev_codes = self._get_task_exit_codes(task_id)
+            if exit_code in prev_codes:
+                logger.warning(
+                    "Task %s: repeated exit code %d (seen %d time(s) before) → systemic infra failure",
+                    task_id, exit_code, prev_codes.count(exit_code),
+                )
+                self._record_timeline(
+                    "task_repeated_exit_code",
+                    task_id=task_id,
+                    exit_code=exit_code,
+                    prev_count=prev_codes.count(exit_code),
+                )
+                self._record_task_exit_code(task_id, exit_code)
+                return "failed", "infra"
+
+        if exit_code != 0:
+            self._record_task_exit_code(task_id, exit_code)
             self._record_timeline("task_failed",
                                   phase="task",
                                   task_id=task_id,
@@ -1021,6 +1101,77 @@ class Worker:
                 return exit_code, "failed"
             time.sleep(self._TASK_CONTROL_POLL_INTERVAL)
 
+    def _collect_remote_error_logs(
+        self,
+        log_file: str,
+        log_dir: str,
+        run_count: int,
+        num_workers: int,
+        task_id: str,
+    ) -> None:
+        """Fetch per-worker error logs from the coordinator (worker 0) and save them locally.
+
+        multihost_runner_orig.py writes all worker output files to a local /tmp/<timestamp>/
+        directory on the coordinator machine (worker 0). This method SSHes to worker 0,
+        fetches the relevant file(s), and saves them as run_{run_count}_worker_{pool}_{i}.err.
+
+        If the failure message identifies a specific worker, only that worker's log is fetched.
+        Otherwise (e.g. OOM kill), all worker logs are fetched individually.
+        """
+        try:
+            with open(log_file) as f:
+                content = f.read()
+        except OSError:
+            return
+
+        match = _REMOTE_LOG_DIR_RE.search(content) or _REMOTE_LOG_DIR_RUNNING_RE.search(content)
+        if not match:
+            return
+
+        remote_log_dir = match.group(1).rstrip("/")
+
+        # Derive naming prefix from jobman worker ID: "128_5" -> "128"
+        worker_suffix = self.worker_id.split("-")[-1]
+        err_prefix = worker_suffix.rsplit("_", 1)[0] if "_" in worker_suffix else worker_suffix
+
+        # Identify which multihost worker(s) failed
+        failed_match = _REMOTE_FAILED_WORKER_RE.search(content)
+        if failed_match:
+            workers_to_fetch = [(int(failed_match.group(1)), int(failed_match.group(2)))]
+            logger.info(
+                "Task %s: collecting remote error log for failed slice %s worker %s from %s",
+                task_id, failed_match.group(1), failed_match.group(2), remote_log_dir,
+            )
+        else:
+            # Process was killed before failure message — fetch all workers
+            workers_to_fetch = [(0, i) for i in range(num_workers)]
+            logger.info(
+                "Task %s: no failure message found (killed?), collecting all %d worker logs from %s",
+                task_id, num_workers, remote_log_dir,
+            )
+
+        for slice_num, worker_num in workers_to_fetch:
+            remote_file = f"{remote_log_dir}/output_slice_{slice_num:04d}_worker_{worker_num:04d}.txt"
+            local_err_file = os.path.join(log_dir, f"run_{run_count}_worker_{err_prefix}_{worker_num}.err")
+            inline = f"cat {shlex.quote(remote_file)} 2>/dev/null"
+            result = subprocess.run(
+                self._ssh_cmd(0, inline),  # logs live on coordinator (worker 0)
+                capture_output=True,
+                text=True,
+            )
+            try:
+                with open(local_err_file, "w") as ef:
+                    if result.stdout:
+                        ef.write(result.stdout)
+                    if result.returncode != 0:
+                        ef.write(f"\n[Remote log collection exited {result.returncode}]\n")
+                        if result.stderr:
+                            ef.write(result.stderr)
+            except OSError as e:
+                logger.warning("Task %s: could not write error log for worker %d: %s", task_id, worker_num, e)
+            else:
+                logger.info("Task %s: saved remote error log for worker %d → %s", task_id, worker_num, local_err_file)
+
     def _has_retryable_failure_pattern(self, text: str = "", log_file: str = "") -> bool:
         if text:
             return _RETRYABLE_FAILURE_PATTERN in text
@@ -1043,6 +1194,47 @@ class Worker:
             except OSError:
                 logger.warning("Failed to read task log %s for worker disconnect detection", log_file)
         return False
+
+    def _has_infra_failure_pattern(self, text: str = "", log_file: str = "") -> bool:
+        if text:
+            return any(pattern in text for pattern in _INFRA_FAILURE_PATTERNS)
+        if log_file and os.path.exists(log_file):
+            try:
+                with open(log_file) as f:
+                    content = f.read()
+                return any(pattern in content for pattern in _INFRA_FAILURE_PATTERNS)
+            except OSError:
+                logger.warning("Failed to read task log %s for infra failure detection", log_file)
+        return False
+
+    def _record_task_exit_code(self, task_id: str, exit_code: int) -> None:
+        """Append an exit code to the task's exit code history file."""
+        ec_path = os.path.join(self._task_log_root, task_id, "exit_codes.json")
+        os.makedirs(os.path.dirname(ec_path), exist_ok=True)
+        codes: list[int] = []
+        if os.path.exists(ec_path):
+            try:
+                with open(ec_path) as f:
+                    codes = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                pass
+        codes.append(exit_code)
+        try:
+            with open(ec_path, "w") as f:
+                json.dump(codes, f)
+        except OSError:
+            logger.warning("Failed to record exit code for task %s", task_id)
+
+    def _get_task_exit_codes(self, task_id: str) -> list[int]:
+        """Get the task's exit code history from previous runs."""
+        ec_path = os.path.join(self._task_log_root, task_id, "exit_codes.json")
+        if os.path.exists(ec_path):
+            try:
+                with open(ec_path) as f:
+                    return json.load(f)
+            except (json.JSONDecodeError, OSError):
+                pass
+        return []
 
     def _is_preempted(self) -> bool:
         status = self.tpu.status()
