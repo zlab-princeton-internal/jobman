@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+source $(conda info --base)/etc/profile.d/conda.sh
+conda activate jobman-lite
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEMPLATE="${SCRIPT_DIR}/tasks/maxtext_train.template.sh"
 TMP_DIR="${SCRIPT_DIR}/.tmp_submissions"
@@ -8,14 +11,14 @@ TMP_DIR="${SCRIPT_DIR}/.tmp_submissions"
 # Edit these arrays directly.
 ACCELS=(
   # "v4-128"
-  # "v6e-128"
-  "v5p-128"
+  "v6e-64"
+  # "v5p-128"
 )
 
 ZONES=(
   # "us-central2-b"
-  # "us-central1-b"
-  # "us-east5-b"
+  "us-central1-b"
+  "us-east5-b"
 )
 
 MODEL_TYPES=(
@@ -26,9 +29,9 @@ MODEL_TYPES=(
 )
 
 PRETRAINS=(
-  # "scratch"
-  "meta"
-  # "l200"
+  "scratch"
+  # "meta"
+  "l200"
 )
 
 LENGTHS=(
@@ -40,8 +43,8 @@ LENGTHS=(
 )
 
 LRS=(
-  "1e-4"
-  # "3e-4"
+  # "1e-4"
+  "3e-4"
 )
 
 mkdir -p "$TMP_DIR"

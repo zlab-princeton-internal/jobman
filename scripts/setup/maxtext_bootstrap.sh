@@ -140,6 +140,48 @@ ensure_gcsfuse() {
   log "gcsfuse installed successfully"
 }
 
+ensure_ssh_identity_keys() {
+  local ssh_dir="$HOME/.ssh"
+  local private_key_file="$ssh_dir/id_ed25519_tpu"
+  local public_key_file="$ssh_dir/id_ed25519_tpu.pub"
+
+  mkdir -p "$ssh_dir"
+  chmod 700 "$ssh_dir"
+
+  # Check if keys already exist
+  if [[ -f "$private_key_file" && -f "$public_key_file" ]]; then
+    chmod 600 "$private_key_file"
+    chmod 644 "$public_key_file"
+    log "SSH identity keys already present: $private_key_file"
+    return
+  fi
+
+  log "Creating SSH identity keys: $private_key_file"
+
+  # Write private key with hardcoded content
+  cat > "$private_key_file" << 'EOF'
+-----BEGIN OPENSSH PRIVATE KEY-----
+b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+QyNTUxOQAAACDMvrKSU3uLFSURNh/Z0ZerVTmgPdQJTrVaaiCRg3O8vAAAAKgv9vVKL/b1
+SgAAAAtzc2gtZWQyNTUxOQAAACDMvrKSU3uLFSURNh/Z0ZerVTmgPdQJTrVaaiCRg3O8vA
+AAAECu+ash05IJbXK/I85ah7fUrGz6VeRVYDpLziUD/Ixa88y+spJTe4sVJRE2H9nRl6tV
+OaA91AlOtVpqIJGDc7y8AAAAIHl4MzAzOEBocGNsb2dpbi5zaGFuZ2hhaS5ueXUuZWR1AQ
+IDBAU=
+-----END OPENSSH PRIVATE KEY-----
+EOF
+
+  # Write public key with hardcoded content
+  cat > "$public_key_file" << 'EOF'
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMy+spJTe4sVJRE2H9nRl6tVOaA91AlOtVpqIJGDc7y8 yx3038@hpclogin.shanghai.nyu.edu
+EOF
+
+  # Set correct permissions
+  chmod 600 "$private_key_file"
+  chmod 644 "$public_key_file"
+
+  log "SSH identity keys created successfully"
+}
+
 is_mounted() {
   local mount_path="$1"
   # Check if the kernel thinks it's a mount point
@@ -313,6 +355,7 @@ main() {
   ensure_state_dir
   configure_region_defaults
   ensure_gcsfuse
+  ensure_ssh_identity_keys
   ensure_primary_bucket_mount
   ensure_cached_data_mount
   ensure_venv

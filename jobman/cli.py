@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import time
+from datetime import datetime
 from fnmatch import fnmatch
 from functools import lru_cache
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -672,6 +676,11 @@ def worker_sync(zone, startup_script):
             # Update status to running if tmux session exists
             if worker_id in recovered_tmux:
                 merged[worker_id]["status"] = "running"
+            # If GCP reports suspended/failed, trust that over local state
+            elif worker_id in gcp_workers:
+                gcp_status = gcp_workers[worker_id].get("status", "")
+                if gcp_status in ("suspended", "failed"):
+                    merged[worker_id]["status"] = gcp_status
 
     if not merged:
         click.echo("No workers found from tmux sessions or GCP.")
@@ -900,17 +909,8 @@ def requeue(task_refs, requeue_all, accelerator, zone, pattern):
         sys.exit(1)
 
 
-@cli.command("status")
-@click.option("--accelerator", "-a", default=None, help="Filter by accelerator type, e.g. v4-8")
-@click.option("--zone", "-z", default=None, help="Filter by GCP zone, e.g. us-central2-b")
-@click.option("--live-only", "-lo", is_flag=True, help="Show only workers with queued-resource status ACTIVE")
-@click.option("--workers-only", "-wo", is_flag=True, help="Show only the worker table")
-@click.option("--task-only", "-to", is_flag=True, help="Show only the task table")
-def status(accelerator, zone, live_only, workers_only, task_only):
-    """Show workers and task queue summary."""
-    if workers_only and task_only:
-        raise click.UsageError("--workers-only and --task-only cannot be used together")
-
+def _print_status(accelerator, zone, live_only, workers_only, task_only, quiet=False):
+    """Render the status output once."""
     registry = _read_workers()
     all_workers = list(registry.values())
     filtered_workers = [
@@ -922,10 +922,10 @@ def status(accelerator, zone, live_only, workers_only, task_only):
     if not task_only:
         click.echo("=== Workers ===")
         if filtered_workers:
-            click.echo("Fetching TPU status from GCP...", err=True)
+            if not quiet:
+                click.echo("Fetching TPU status from GCP...", err=True)
             statuses = _fetch_worker_statuses({w["worker_id"]: w for _, w in filtered_workers})
             running_tasks_by_worker = _running_tasks_by_worker()
-            click.echo(f"{'#':<4} {'WORKER':<28} {'ACCELERATOR':<12} {'ZONE':<20} {'STATUS':<10} {'VM':<12} {'QR':<14} HEALTH")
             rows = []
             for idx, w in filtered_workers:
                 pstatus, vm_status, qr_status, health_status = statuses.get(w["worker_id"], ("?", "?", "?", "UNKNOWN"))
@@ -941,9 +941,17 @@ def status(accelerator, zone, live_only, workers_only, task_only):
                 )
                 rows.append((idx, w, display_status, vm_status, qr_status, health_status))
             if rows:
-                for idx, w, display_status, vm_status, qr_status, health_status in rows:
-                    click.echo(f"{idx:<4} {w['worker_id']:<28} {w['accelerator']:<12} {w['zone']:<20} "
-                               f"{display_status:<10} {vm_status:<12} {qr_status:<14} {health_status}")
+                zones_order = sorted({w["zone"] for _, w, *_ in rows})
+                for z in zones_order:
+                    zone_rows = sorted(
+                        [r for r in rows if r[1]["zone"] == z],
+                        key=lambda r: r[1].get("accelerator", ""),
+                    )
+                    click.echo(f"\n  --- Zone: {z} ---")
+                    click.echo(f"  {'#':<4} {'WORKER':<28} {'ACCELERATOR':<12} {'STATUS':<10} {'VM':<12} {'QR':<14} HEALTH")
+                    for idx, w, display_status, vm_status, qr_status, health_status in zone_rows:
+                        click.echo(f"  {idx:<4} {w['worker_id']:<28} {w['accelerator']:<12} "
+                                   f"{display_status:<10} {vm_status:<12} {qr_status:<14} {health_status}")
             else:
                 click.echo("  (none)")
         else:
@@ -966,12 +974,51 @@ def status(accelerator, zone, live_only, workers_only, task_only):
     if not tasks:
         click.echo("  (empty)")
         return
-    click.echo(f"{'#':<4} {'ID':<18} {'NAME':<40} {'STATUS':<12} {'RETRY':<7} {'ACCELERATOR':<12} {'ZONE':<20} {'WORKER'}")
-    for idx, t in tasks:
-        worker_id = t.get("worker_id") or "-"
-        retry = f"{t.get('fail_count', 0)}/{t.get('max_retries', 3)}"
-        click.echo(f"{idx:<4} {t['id']:<18} {t['name']:<40} {t['status']:<12} {retry:<7} "
-                   f"{t['accelerator']:<12} {t.get('zone',''):<20} {worker_id}")
+    task_zones_order = sorted({t.get("zone") or "" for _, t in tasks})
+    for z in task_zones_order:
+        zone_tasks = sorted(
+            [(idx, t) for idx, t in tasks if (t.get("zone") or "") == z],
+            key=lambda x: x[1].get("accelerator", ""),
+        )
+        zone_label = z if z else "(no zone)"
+        click.echo(f"\n  --- Zone: {zone_label} ---")
+        click.echo(f"  {'#':<4} {'ID':<18} {'NAME':<40} {'STATUS':<12} {'RETRY':<7} {'ACCELERATOR':<12} {'WORKER'}")
+        for idx, t in zone_tasks:
+            worker_id = t.get("worker_id") or "-"
+            retry = f"{t.get('fail_count', 0)}/{t.get('max_retries', 3)}"
+            click.echo(f"  {idx:<4} {t['id']:<18} {t['name']:<40} {t['status']:<12} {retry:<7} "
+                       f"{t['accelerator']:<12} {worker_id}")
+
+
+@cli.command("status")
+@click.option("--accelerator", "-a", default=None, help="Filter by accelerator type, e.g. v4-8")
+@click.option("--zone", "-z", default=None, help="Filter by GCP zone, e.g. us-central2-b")
+@click.option("--live-only", "-lo", is_flag=True, help="Show only workers with queued-resource status ACTIVE")
+@click.option("--workers-only", "-wo", is_flag=True, help="Show only the worker table")
+@click.option("--task-only", "-to", is_flag=True, help="Show only the task table")
+@click.option("--watch", "-w", is_flag=True, help="Continuously refresh status (Ctrl+C to stop)")
+@click.option("--interval", "-n", default=5, show_default=True, help="Refresh interval in seconds (with --watch)")
+def status(accelerator, zone, live_only, workers_only, task_only, watch, interval):
+    """Show workers and task queue summary."""
+    if workers_only and task_only:
+        raise click.UsageError("--workers-only and --task-only cannot be used together")
+
+    if not watch:
+        _print_status(accelerator, zone, live_only, workers_only, task_only)
+        return
+
+    try:
+        while True:
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                _print_status(accelerator, zone, live_only, workers_only, task_only, quiet=True)
+            click.clear()
+            sys.stdout.write(buf.getvalue())
+            sys.stdout.write(f"\nLast updated: {datetime.now().strftime('%H:%M:%S')}\n")
+            sys.stdout.flush()
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        pass
 
 
 @cli.command("availability")

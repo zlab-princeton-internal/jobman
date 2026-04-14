@@ -193,9 +193,10 @@ class TPU:
 
     def delete(self) -> None:
         """Delete the TPU VM (and queued resource if applicable)."""
-        if self.mode == "queued-resources":
-            self._delete_queued_resource()
         self._delete_tpu_vm()
+        if self.mode == "queued-resources":
+            self._wait_tpu_vm_deleted()
+            self._delete_queued_resource()
 
     def wait_ready(
         self,
@@ -313,6 +314,16 @@ class TPU:
             return self._tpu_vm_status()
 
         return _normalize_status(qr_state)
+
+    def _wait_tpu_vm_deleted(self, timeout: int = 300, poll_interval: int = 10) -> None:
+        """Poll until the TPU VM is gone (NOT_FOUND), so the QR can be deleted."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if self._tpu_vm_status() == "NOT_FOUND":
+                return
+            logger.info("Waiting for TPU VM %s to finish deleting...", self.name)
+            time.sleep(poll_interval)
+        logger.warning("TPU VM %s still exists after %ds; proceeding with QR deletion anyway.", self.name, timeout)
 
     def _delete_queued_resource(self, max_retries: int = 3) -> None:
         logger.info("Deleting queued resource %s...", self._queued_resource_id)
