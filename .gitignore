@@ -14,8 +14,11 @@ legacy/
 queue_machines/
 tests/
 
-config/
-assets/
+config/*
+!config/test_jobman.yaml
+
+assets/*
+!assets/maxtext-requirements.txt
 .v*/
 .c*/
 
